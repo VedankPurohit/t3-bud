@@ -2,19 +2,15 @@ import { app, safeStorage } from "electron";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
-export interface StoredAuth {
-  readonly serverUrl: string;
-  readonly token: string;
-  readonly expiresAt: string;
-}
+import type { Pairing } from "./t3/auth";
 
 interface ConfigFile {
-  serverUrl?: string;
-  /** The MCP bearer token, encrypted with the OS keychain via safeStorage. */
+  httpBaseUrl?: string;
+  environmentId?: string;
+  environmentLabel?: string;
+  /** The Bearer token from pairing, encrypted with the OS keychain via safeStorage. */
   sealedToken?: string;
   tokenExpiresAt?: string;
-  /** Threads that finished while the companion watched and were not opened yet. */
-  fresh?: string[];
   /** Where the user dragged the island: the capsule's top-center, in screen points. */
   anchor?: { x: number; y: number };
 }
@@ -38,27 +34,35 @@ function write(update: (config: ConfigFile) => ConfigFile) {
 }
 
 export const config = {
-  serverUrl: () => read().serverUrl ?? null,
-  auth(): StoredAuth | null {
+  /** The server paired last, even after its token expired, to suggest pairing again. */
+  serverUrl: () => read().httpBaseUrl ?? null,
+  pairing(): Pairing | null {
     const file = read();
-    if (!file.serverUrl || !file.sealedToken || !file.tokenExpiresAt) return null;
+    if (!file.httpBaseUrl || !file.sealedToken || !file.tokenExpiresAt || !file.environmentId) return null;
     if (Date.parse(file.tokenExpiresAt) <= Date.now()) return null;
     try {
-      const token = safeStorage.decryptString(Buffer.from(file.sealedToken, "base64"));
-      return { serverUrl: file.serverUrl, token, expiresAt: file.tokenExpiresAt };
+      return {
+        httpBaseUrl: file.httpBaseUrl,
+        environmentId: file.environmentId,
+        environmentLabel: file.environmentLabel ?? "T3 Code",
+        token: safeStorage.decryptString(Buffer.from(file.sealedToken, "base64")),
+        expiresAt: file.tokenExpiresAt,
+      };
     } catch {
       return null;
     }
   },
-  saveAuth(auth: StoredAuth) {
+  savePairing(pairing: Pairing) {
     write((file) => ({
       ...file,
-      serverUrl: auth.serverUrl,
-      sealedToken: safeStorage.encryptString(auth.token).toString("base64"),
-      tokenExpiresAt: auth.expiresAt,
+      httpBaseUrl: pairing.httpBaseUrl,
+      environmentId: pairing.environmentId,
+      environmentLabel: pairing.environmentLabel,
+      sealedToken: safeStorage.encryptString(pairing.token).toString("base64"),
+      tokenExpiresAt: pairing.expiresAt,
     }));
   },
-  clearAuth() {
+  clearPairing() {
     write(({ sealedToken: _token, tokenExpiresAt: _expires, ...file }) => file);
   },
   anchor: () => {
@@ -67,9 +71,5 @@ export const config = {
   },
   saveAnchor(anchor: { x: number; y: number }) {
     write((file) => ({ ...file, anchor }));
-  },
-  fresh: () => new Set(read().fresh ?? []),
-  saveFresh(fresh: ReadonlySet<string>) {
-    write((file) => ({ ...file, fresh: [...fresh] }));
   },
 };

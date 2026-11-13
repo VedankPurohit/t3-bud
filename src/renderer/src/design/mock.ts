@@ -64,7 +64,7 @@ const thread = (
   createdBy: "user",
   updatedAt: minutesAgo(12),
   pendingRequestCount: 0,
-  fresh: false,
+  unread: false,
   ...overrides,
 });
 
@@ -96,7 +96,7 @@ export const mockInbox: ThreadSummary[] = [
   thread("i1", {
     title: "Fix flaky composer focus test",
     projectId: "p-t3",
-    fresh: true,
+    unread: true,
     updatedAt: minutesAgo(2),
   }),
   thread("i2", {
@@ -110,7 +110,7 @@ export const mockInbox: ThreadSummary[] = [
   thread("i3", {
     title: "Director prompt for scene transitions",
     projectId: "p-rp",
-    fresh: true,
+    unread: true,
     model: "claude-sonnet-5-5",
     updatedAt: minutesAgo(18),
   }),
@@ -183,6 +183,8 @@ export const mockThreadDetail: ThreadDetail = {
   model: "claude-opus-5-5",
   loading: false,
   error: null,
+  requests: [],
+  hiddenRequestCount: 0,
   items: [
     item(1, "user_message", "The composer focus test fails about one run in ten on CI. Can you find out why and fix it?"),
     item(
@@ -209,6 +211,8 @@ export const mockAttentionDetail: ThreadDetail = {
   model: "claude-opus-5-5",
   loading: false,
   error: null,
+  requests: [],
+  hiddenRequestCount: 0,
   items: [
     item(1, "user_message", "Migrate the desktop settings file to the new schema and keep old files readable."),
     item(

@@ -35,10 +35,10 @@ export interface ThreadSummary {
   readonly runtimeMode: string | null;
   readonly createdBy: string;
   readonly updatedAt: string;
-  /** Approvals and questions waiting on the user; only known for working threads. */
+  /** Approvals and questions waiting on the user, including ones from its subagents. */
   readonly pendingRequestCount: number;
-  /** Finished while the companion watched, and not opened since. */
-  readonly fresh: boolean;
+  /** T3 Code's unread: the latest run finished after the user last looked at the thread. */
+  readonly unread: boolean;
 }
 
 export interface ProjectSummary {
@@ -55,6 +55,7 @@ export interface ModelOption {
 
 export interface ProviderModel {
   readonly id: string;
+  readonly label?: string;
   readonly options: readonly ModelOption[];
 }
 
@@ -73,7 +74,7 @@ export interface ModelSelection {
 
 export type Connection =
   | { readonly state: "unconfigured"; readonly suggestedUrl: string | null }
-  | { readonly state: "authorizing"; readonly serverUrl: string }
+  | { readonly state: "pairing"; readonly serverUrl: string }
   | { readonly state: "connected"; readonly serverUrl: string }
   | { readonly state: "needs-auth"; readonly serverUrl: string; readonly reason: string }
   | { readonly state: "offline"; readonly serverUrl: string; readonly error: string };
@@ -88,7 +89,7 @@ export interface CompanionState {
   readonly inboxTotal: number;
   readonly projects: readonly ProjectSummary[];
   readonly providers: readonly Provider[];
-  /** When the last poll succeeded; MCP has no push, so the UI shows how fresh this is. */
+  /** When the live connection last delivered an update. */
   readonly syncedAt: string | null;
 }
 
@@ -102,6 +103,28 @@ export interface ThreadItem {
   readonly updatedAt: string;
 }
 
+export interface PendingQuestion {
+  readonly id: string;
+  readonly header: string | null;
+  readonly question: string;
+  readonly options: ReadonlyArray<{ readonly label: string; readonly value: string; readonly description: string | null }>;
+  readonly multiSelect: boolean;
+  readonly allowCustomAnswer: boolean;
+}
+
+/** An approval or question the agent is blocked on; answered with `respond`. */
+export interface PendingRequest {
+  /** The thread that asked, which can be a subagent of the open thread. */
+  readonly threadId: string;
+  readonly requestId: string;
+  readonly kind: "approval" | "question";
+  /** For approvals: what it wants to do, e.g. a command. */
+  readonly title: string | null;
+  readonly detail: string | null;
+  readonly decisions: ReadonlyArray<{ readonly decision: string; readonly label: string; readonly warning: string | null }>;
+  readonly questions: readonly PendingQuestion[];
+}
+
 export interface ThreadDetail {
   readonly threadId: string;
   readonly title: string;
@@ -110,9 +133,16 @@ export interface ThreadDetail {
   readonly providerInstanceId: string | null;
   readonly model: string | null;
   readonly items: readonly ThreadItem[];
+  readonly requests: readonly PendingRequest[];
+  /** A request from a subagent the companion cannot show; it opens in T3 Code. */
+  readonly hiddenRequestCount: number;
   readonly loading: boolean;
   readonly error: string | null;
 }
+
+export type RequestResponse =
+  | { readonly decision: string }
+  | { readonly answers: Readonly<Record<string, string | readonly string[]>> };
 
 export type ActionResult<T = void> =
   | { readonly ok: true; readonly value: T }
@@ -124,7 +154,8 @@ export type OrganizeAction = "settle" | "unsettle" | "snooze" | "unsnooze" | "ma
 export interface CompanionApi {
   getState(): Promise<CompanionState>;
   onState(listener: (state: CompanionState) => void): () => void;
-  connect(serverUrl: string): Promise<ActionResult>;
+  /** Pairs with a link from T3 Code, or a bare code plus the address it belongs to. */
+  connect(pairing: string, address: string | null): Promise<ActionResult>;
   signOut(): Promise<void>;
   /** Sizes the window to what the island shows; `focus` when it takes keyboard input. */
   resize(size: { width: number; height: number; focus: boolean }): Promise<void>;
@@ -134,14 +165,15 @@ export interface CompanionApi {
   onFoldRequest(listener: () => void): () => void;
   openThread(threadId: string | null): Promise<void>;
   onThreadDetail(listener: (detail: ThreadDetail) => void): () => void;
-  send(threadId: string, message: string): Promise<ActionResult>;
+  /** Sends a message; a model selection switches the model starting with this turn. */
+  send(threadId: string, message: string, modelSelection: ModelSelection | null): Promise<ActionResult>;
+  respond(threadId: string, requestId: string, response: RequestResponse): Promise<ActionResult>;
   launch(input: {
     projectId: string;
     message: string;
     modelSelection: ModelSelection | null;
   }): Promise<ActionResult<{ threadId: string }>>;
   organize(threadId: string, action: OrganizeAction, snoozedUntil?: string): Promise<ActionResult>;
-  configure(threadId: string, modelSelection: ModelSelection): Promise<ActionResult>;
   interrupt(threadId: string): Promise<ActionResult>;
   openInT3Code(threadId: string | null): Promise<void>;
   quit(): Promise<void>;

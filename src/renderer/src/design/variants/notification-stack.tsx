@@ -40,7 +40,7 @@ const approvalThread = find(mockState.working, "w1");
 const failedThread = find(mockState.inbox, "i2");
 const doneThread = find(mockState.inbox, "i1");
 const freshThread = find(mockState.inbox, "i3");
-const quietDone = mockState.inbox.filter((thread) => !thread.fresh && thread.status !== "failed");
+const quietDone = mockState.inbox.filter((thread) => !thread.unread && thread.status !== "failed");
 const runningThreads = mockState.working.filter((thread) => thread.pendingRequestCount === 0);
 
 function OpenToApprove() {

@@ -192,7 +192,7 @@ function topStatusFor(thread: ThreadSummary, shelf: Shelf) {
   if (thread.pendingRequestCount > 0) return TOP_STATUS.approval;
   if (shelf === "working") return TOP_STATUS.working;
   if (thread.status === "failed") return TOP_STATUS.failed;
-  if (thread.fresh) return TOP_STATUS.done;
+  if (thread.unread) return TOP_STATUS.done;
   return null;
 }
 
@@ -205,7 +205,7 @@ export function ThreadRow(props: { thread: ThreadSummary; shelf: Shelf; active?:
   const rawStatus = settled ? null : topStatusFor(thread, shelf);
   // Opening a finished thread reads it, so the active row drops its Done mark.
   const status = props.active && rawStatus === TOP_STATUS.done ? null : rawStatus;
-  const unread = thread.fresh || status !== null;
+  const unread = thread.unread || status !== null;
   const recede = settled;
   return (
     <li className="list-none">

@@ -1,9 +1,10 @@
-import type { ThreadDetail } from "@shared/types";
+import type { PendingRequest, RequestResponse, ThreadDetail } from "@shared/types";
 import { ArrowUpRightIcon, ChevronLeftIcon, ShieldIcon, SquareArrowOutUpRightIcon } from "lucide-react";
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
+import { cn } from "../t3/lib/utils";
 import { Button } from "../t3/ui/button";
 import { ProjectGlyph } from "./rows";
 
@@ -111,25 +112,140 @@ export function ThreadHeader(props: {
 }
 
 /**
- * TimelinePendingApprovalRow with Approve and Decline swapped for the hand-off: MCP cannot answer
- * permission requests, so the honest action is opening the thread in T3 Code.
+ * TimelinePendingApprovalRow and ComposerPendingUserInputPanel, cut down: the companion answers
+ * approvals and questions in place over T3 Code's client protocol.
  */
-export function PendingRequestRow(props: { count: number; onOpenInT3: () => void }) {
+export function RequestCard(props: {
+  request: PendingRequest;
+  onRespond: (response: RequestResponse) => Promise<boolean>;
+}) {
+  const { request } = props;
+  const [busy, setBusy] = useState(false);
+  const [answers, setAnswers] = useState<Record<string, string[]>>({});
+  const [custom, setCustom] = useState<Record<string, string>>({});
+  const respond = async (response: RequestResponse) => {
+    setBusy(true);
+    const ok = await props.onRespond(response);
+    if (!ok) setBusy(false);
+  };
+
+  if (request.kind === "approval") {
+    return (
+      <div role="group" aria-label="Approval request" className="flex min-w-0 flex-col gap-2 rounded-xl border border-warning/30 bg-warning/6 p-3 text-xs">
+        <span className="inline-flex items-center gap-1.5 text-sm font-medium text-warning-foreground">
+          <ShieldIcon aria-hidden className="size-3.5 shrink-0" />
+          Waiting for your approval
+        </span>
+        {request.title ? (
+          <code className="selectable block min-w-0 rounded-md bg-background/60 px-2 py-1.5 font-mono text-xs leading-5 whitespace-pre-wrap text-foreground wrap-anywhere">
+            {request.title}
+          </code>
+        ) : null}
+        {request.detail ? <span className="text-muted-foreground">{request.detail}</span> : null}
+        <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+          {request.decisions.map((option, index) => (
+            <Button
+              key={option.decision}
+              size="xs"
+              disabled={busy}
+              variant={index === 0 ? "default" : "outline"}
+              title={option.warning ?? undefined}
+              onClick={() => void respond({ decision: option.decision })}
+            >
+              {option.label}
+            </Button>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  const ready = request.questions.every(
+    (question) => (answers[question.id]?.length ?? 0) > 0 || (custom[question.id] ?? "").trim().length > 0,
+  );
+  const submit = () => {
+    const result: Record<string, string | string[]> = {};
+    for (const question of request.questions) {
+      const typed = (custom[question.id] ?? "").trim();
+      const picked = answers[question.id] ?? [];
+      result[question.id] = question.multiSelect ? [...picked, ...(typed ? [typed] : [])] : typed || picked[0] || "";
+    }
+    void respond({ answers: result });
+  };
   return (
-    <div role="group" aria-label="Waiting on you" className="flex min-w-0 flex-col gap-1.5 px-1 py-0.5 text-xs">
-      <span className="inline-flex items-center gap-1 text-sm font-medium text-warning-foreground">
-        <ShieldIcon aria-hidden className="size-3.5 shrink-0" />
-        {props.count === 1 ? "Waiting for your approval" : `${props.count} requests waiting on you`}
-      </span>
-      <span className="text-muted-foreground">
-        The agent paused until you answer. Approvals only work in T3 Code.
-      </span>
-      <div className="pt-0.5">
-        <Button size="xs" variant="warning-outline" onClick={props.onOpenInT3}>
-          Open in T3 Code to approve
-          <ArrowUpRightIcon />
+    <div role="group" aria-label="Question" className="flex min-w-0 flex-col gap-3 rounded-xl border border-info/30 bg-info/6 p-3 text-xs">
+      {request.questions.map((question) => (
+        <div key={question.id} className="flex flex-col gap-1.5">
+          {question.header ? <span className="text-2xs font-medium text-muted-foreground uppercase">{question.header}</span> : null}
+          <span className="selectable text-sm text-foreground">{question.question}</span>
+          <div className="flex flex-col gap-1">
+            {question.options.map((option) => {
+              const chosen = answers[question.id]?.includes(option.value) ?? false;
+              return (
+                <button
+                  key={option.value}
+                  type="button"
+                  disabled={busy}
+                  aria-pressed={chosen}
+                  onClick={() => {
+                    setAnswers((current) => {
+                      const picked = current[question.id] ?? [];
+                      const next = question.multiSelect
+                        ? chosen
+                          ? picked.filter((value) => value !== option.value)
+                          : [...picked, option.value]
+                        : [option.value];
+                      return { ...current, [question.id]: next };
+                    });
+                    if (!question.multiSelect) setCustom((current) => ({ ...current, [question.id]: "" }));
+                  }}
+                  className={cn(
+                    "flex min-w-0 flex-col items-start rounded-md border px-2.5 py-1.5 text-left text-sm transition-colors",
+                    chosen ? "border-primary/60 bg-primary/10 text-foreground" : "border-border bg-background/40 hover:bg-accent",
+                  )}
+                >
+                  {option.label}
+                  {option.description && option.description !== option.label ? <span className="text-xs text-muted-foreground">{option.description}</span> : null}
+                </button>
+              );
+            })}
+            {question.allowCustomAnswer || question.options.length === 0 ? (
+              <input
+                value={custom[question.id] ?? ""}
+                disabled={busy}
+                placeholder="Type an answer"
+                onChange={(event) => {
+                  const value = event.target.value;
+                  setCustom((current) => ({ ...current, [question.id]: value }));
+                  if (!question.multiSelect && value) setAnswers((current) => ({ ...current, [question.id]: [] }));
+                }}
+                className="selectable h-8 rounded-md border border-border bg-background/40 px-2.5 text-sm outline-none focus:border-ring"
+              />
+            ) : null}
+          </div>
+        </div>
+      ))}
+      <div className="flex justify-end">
+        <Button size="xs" disabled={!ready || busy} onClick={submit}>
+          Send answer
         </Button>
       </div>
+    </div>
+  );
+}
+
+/** A subagent's request the companion does not show inline; T3 Code answers it. */
+export function HiddenRequestRow(props: { count: number; onOpenInT3: () => void }) {
+  return (
+    <div className="flex min-w-0 items-center gap-2 rounded-xl border border-warning/30 bg-warning/6 px-3 py-2 text-xs">
+      <ShieldIcon aria-hidden className="size-3.5 shrink-0 text-warning-foreground" />
+      <span className="min-w-0 flex-1 text-muted-foreground">
+        {props.count === 1 ? "A subagent is waiting on you." : `${props.count} subagent requests are waiting.`}
+      </span>
+      <Button size="xs" variant="warning-outline" onClick={props.onOpenInT3}>
+        Open in T3 Code
+        <ArrowUpRightIcon />
+      </Button>
     </div>
   );
 }

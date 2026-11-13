@@ -196,7 +196,7 @@ function topStatus(thread: ThreadSummary) {
     return { label: "Working", Icon: CircleDashedIcon, className: "text-info-foreground" };
   if (thread.status === "failed")
     return { label: "Failed", Icon: CircleAlertIcon, className: "text-error-foreground" };
-  if (thread.fresh)
+  if (thread.unread)
     return { label: "Done", Icon: CircleCheckIcon, className: "text-success-foreground" };
   return null;
 }
@@ -214,7 +214,7 @@ export function SidebarCardRow(props: {
 }) {
   const { thread } = props;
   const status = topStatus(thread);
-  const recede = props.settled || (status === null && !thread.fresh);
+  const recede = props.settled || (status === null && !thread.unread);
   return (
     <li className="list-none py-0.5">
       <div

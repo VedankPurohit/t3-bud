@@ -1,10 +1,10 @@
 import { BrowserWindow, app, ipcMain, screen, shell } from "electron";
 import { join } from "node:path";
 
-import type { ModelSelection, OrganizeAction } from "../shared/types";
+import type { ModelSelection, OrganizeAction, RequestResponse } from "../shared/types";
 import { config } from "./config";
 import { anchorOf, defaultAnchor, islandBounds, type Point } from "./island";
-import { probeServer, signIn } from "./oauth";
+import { describeEnvironment } from "./t3/auth";
 import { CompanionStore } from "./store";
 
 /** Where T3 Code's desktop app serves its local environment by default. */
@@ -32,7 +32,7 @@ const contains = (area: Electron.Rectangle, point: Point) =>
 
 async function detectLocalServer(): Promise<string | null> {
   for (const candidate of LOCAL_CANDIDATES) {
-    if (await probeServer(candidate)) return candidate;
+    if (await describeEnvironment(candidate).then(() => true, () => false)) return candidate;
   }
   return null;
 }
@@ -130,18 +130,7 @@ function registerIpc() {
   };
 
   handle("companion:get-state", () => store.state());
-  handle("companion:connect", async (serverUrl: string) => {
-    try {
-      store.authorizing(new URL(serverUrl).origin);
-      const auth = await signIn(serverUrl, null);
-      config.saveAuth(auth);
-      store.use(auth.serverUrl, auth.token);
-      return { ok: true, value: undefined };
-    } catch (error) {
-      store.start(await detectLocalServer());
-      return { ok: false, error: error instanceof Error ? error.message : "Could not connect." };
-    }
-  });
+  handle("companion:connect", (pairing: string, address: string | null) => store.pairWith(pairing, address));
   handle("companion:sign-out", async () => store.signOut(await detectLocalServer()));
   handle("companion:resize", (size: { width: number; height: number; focus: boolean }) => resize(size));
   handle("companion:move", (position: { x: number; y: number; settled: boolean }) => {
@@ -160,7 +149,12 @@ function registerIpc() {
     config.saveAnchor(anchor);
   });
   handle("companion:open-thread", (threadId: string | null) => store.openThread(threadId));
-  handle("companion:send", (threadId: string, message: string) => store.send(threadId, message));
+  handle("companion:send", (threadId: string, message: string, selection: ModelSelection | null) =>
+    store.send(threadId, message, selection),
+  );
+  handle("companion:respond", (threadId: string, requestId: string, response: RequestResponse) =>
+    store.respond(threadId, requestId, response),
+  );
   handle(
     "companion:launch",
     (input: { projectId: string; message: string; modelSelection: ModelSelection | null }) =>
@@ -170,9 +164,6 @@ function registerIpc() {
     "companion:organize",
     (threadId: string, action: OrganizeAction, snoozedUntil?: string) =>
       store.organize(threadId, action, snoozedUntil),
-  );
-  handle("companion:configure", (threadId: string, selection: ModelSelection) =>
-    store.configure(threadId, selection),
   );
   handle("companion:interrupt", (threadId: string) => store.interrupt(threadId));
   handle("companion:open-in-t3", async (threadId: string | null) => {
@@ -201,7 +192,7 @@ if (!app.requestSingleInstanceLock()) {
     if (process.platform === "darwin") app.dock?.hide();
     registerIpc();
     createWindow();
-    store.start(config.auth() ? null : await detectLocalServer());
+    store.start(config.pairing() ? null : await detectLocalServer());
   });
   app.on("before-quit", () => {
     quitting = true;

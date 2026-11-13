@@ -1,97 +1,104 @@
+import { randomUUID } from "node:crypto";
+
 import type {
   ActionResult,
   CompanionState,
   Connection,
   ModelSelection,
   OrganizeAction,
+  PendingRequest,
   ProjectSummary,
   Provider,
+  RequestResponse,
   ThreadDetail,
-  ThreadItem,
   ThreadStatus,
 } from "../shared/types";
-import { WORKING_STATUSES, isWorking } from "../shared/types";
 import { config } from "./config";
-import { buildInbox, nextFresh, type RawThread } from "./inbox";
-import { McpAuthError, McpToolError, T3McpClient } from "./mcp";
+import { pair, parsePairingInput, SessionEndedError, sessionIsValid, socketUrl, type Pairing } from "./t3/auth";
+import { RpcError, RpcSocket } from "./t3/rpc";
+import { buildSections } from "./t3/sections";
+import { applyShellItem, emptyShell, pendingByListedThread, type RawThreadShell, type ShellState } from "./t3/shell";
+import { applyThreadItem, emptyThreadStream, pendingRequests, type RawTurnItem, type ThreadStreamState } from "./t3/thread";
 
-const RECENT_LIMIT = 40;
-const SHELF_LIMIT = 25;
-const POLL_FOREGROUND_MS = 2_500;
-const POLL_BACKGROUND_MS = 5_000;
-const SHELF_EVERY_MS = 30_000;
-const CATALOG_EVERY_MS = 5 * 60_000;
-const DETAIL_ACTIVE_MS = 1_200;
-const DETAIL_IDLE_MS = 6_000;
-const DETAIL_PAGE = 100;
-const DETAIL_MAX_CHARS = 30_000;
+/** Coalesces bursts (a streaming reply sends many frames) into one update per frame budget. */
+const PUBLISH_DELAY_MS = 60;
+const RECONNECT_CAP_MS = 30_000;
 
-interface ListResult {
-  readonly threads: RawThread[];
-  readonly total: number;
+interface ConfigProvider {
+  instanceId: string;
+  driver: string;
+  displayName?: string;
+  enabled: boolean;
+  installed: boolean;
+  status: string;
+  models: Array<{
+    slug: string;
+    name?: string;
+    capabilities?: {
+      optionDescriptors?: Array<{
+        id: string;
+        options?: Array<{ id: string; isDefault?: boolean }>;
+        currentValue?: string | boolean;
+      }>;
+    };
+  }>;
 }
 
-interface ReadResult {
-  readonly thread: RawThread & { readonly pendingRequestCount: number };
-  readonly items: ReadonlyArray<ThreadItem & { readonly textTruncated?: boolean }>;
-  readonly nextPosition: number | null;
-  readonly hasMore: boolean;
-}
+const errorMessage = (error: unknown) => (error instanceof Error ? error.message : "Something went wrong.");
 
-const errorMessage = (error: unknown) =>
-  error instanceof Error ? error.message : "Something went wrong.";
-
-/** Polls T3 Code over MCP and keeps the companion's view of it. */
+/** Keeps a live view of one T3 Code environment over its client protocol. */
 export class CompanionStore {
-  private client: T3McpClient | null = null;
+  private pairing: Pairing | null = null;
+  private socket: RpcSocket | null = null;
   private connection: Connection = { state: "unconfigured", suggestedUrl: null };
-  private environmentId: string | null = null;
-  private recent: RawThread[] = [];
-  private recentTotal = 0;
-  private working: RawThread[] = [];
-  private snoozed: RawThread[] = [];
-  private settled: RawThread[] = [];
-  private pending = new Map<string, number>();
-  private fresh = config.fresh();
-  private previouslyWorking: Set<string> | null = null;
-  private projects: ProjectSummary[] = [];
+  private shell: ShellState = emptyShell;
   private providers: Provider[] = [];
   private syncedAt: string | null = null;
-  private lastShelvesAt = 0;
-  private lastCatalogAt = 0;
-  private timer: ReturnType<typeof setTimeout> | null = null;
-  private foreground = false;
-  private detail: ThreadDetail | null = null;
+  private retry = 0;
+  private retryTimer: ReturnType<typeof setTimeout> | null = null;
+  private publishTimer: ReturnType<typeof setTimeout> | null = null;
+  private generation = 0;
+
+  private openThreadId: string | null = null;
+  private thread: ThreadStreamState = emptyThreadStream;
+  private cancelThread: (() => void) | null = null;
   private detailTimer: ReturnType<typeof setTimeout> | null = null;
-  private detailGeneration = 0;
+  private visitedCompletion: string | null = null;
+  private visitSent = false;
 
   constructor(
     private readonly emit: (state: CompanionState) => void,
     private readonly emitDetail: (detail: ThreadDetail) => void,
   ) {}
 
+  // ── State ──────────────────────────────────────────────────────────────────────────────────
+
   state(): CompanionState {
-    const sections = buildInbox({
-      recent: this.recent,
-      working: this.working,
-      snoozed: this.snoozed,
-      settled: this.settled,
-      pending: this.pending,
-      fresh: this.fresh,
-    });
+    const sections = buildSections(this.shell, Date.now());
+    const lastActivity = new Map<string, number>();
+    for (const thread of this.shell.threads.values()) {
+      lastActivity.set(thread.projectId, Math.max(lastActivity.get(thread.projectId) ?? 0, Date.parse(thread.updatedAt)));
+    }
+    const projects: ProjectSummary[] = [...this.shell.projects.values()]
+      .filter((project) => !project.archivedAt)
+      .map((project) => ({ id: project.id, title: project.title, workspaceRoot: project.workspaceRoot }))
+      .sort((left, right) => (lastActivity.get(right.id) ?? 0) - (lastActivity.get(left.id) ?? 0));
     return {
       connection: this.connection,
-      environmentId: this.environmentId,
+      environmentId: this.pairing?.environmentId ?? null,
       ...sections,
-      inboxTotal: this.recentTotal,
-      projects: this.projects,
+      projects,
       providers: this.providers,
       syncedAt: this.syncedAt,
     };
   }
 
   private publish() {
-    this.emit(this.state());
+    if (this.publishTimer) return;
+    this.publishTimer = setTimeout(() => {
+      this.publishTimer = null;
+      this.emit(this.state());
+    }, PUBLISH_DELAY_MS);
   }
 
   private setConnection(connection: Connection) {
@@ -99,336 +106,392 @@ export class CompanionStore {
     this.publish();
   }
 
-  /** Starts with the saved sign-in, or reports what is needed to connect. */
+  // ── Pairing and connection ─────────────────────────────────────────────────────────────────
+
   start(suggestedUrl: string | null) {
-    const auth = config.auth();
-    if (!auth) {
-      const serverUrl = config.serverUrl();
-      this.setConnection(
-        serverUrl
-          ? { state: "needs-auth", serverUrl, reason: "Sign in again to keep using T3 Code." }
-          : { state: "unconfigured", suggestedUrl },
-      );
+    const pairing = config.pairing();
+    if (pairing) {
+      this.use(pairing);
       return;
     }
-    this.use(auth.serverUrl, auth.token);
-  }
-
-  use(serverUrl: string, token: string) {
-    void this.client?.close();
-    this.client = new T3McpClient(serverUrl, token);
-    this.environmentId = null;
-    this.previouslyWorking = null;
-    this.lastShelvesAt = 0;
-    this.lastCatalogAt = 0;
-    this.setConnection({ state: "connected", serverUrl });
-    this.schedule(0);
-  }
-
-  authorizing(serverUrl: string) {
-    this.setConnection({ state: "authorizing", serverUrl });
-  }
-
-  signOut(suggestedUrl: string | null) {
-    config.clearAuth();
-    void this.client?.close();
-    this.client = null;
-    this.stopTimer();
-    this.recent = [];
-    this.working = [];
-    this.snoozed = [];
-    this.settled = [];
-    this.setConnection({ state: "unconfigured", suggestedUrl });
-  }
-
-  setForeground(foreground: boolean) {
-    if (this.foreground === foreground) return;
-    this.foreground = foreground;
-    if (foreground) this.schedule(0);
-  }
-
-  private stopTimer() {
-    if (this.timer) clearTimeout(this.timer);
-    this.timer = null;
-  }
-
-  private schedule(delay: number) {
-    this.stopTimer();
-    this.timer = setTimeout(() => void this.poll(), delay);
-  }
-
-  private async poll() {
-    const client = this.client;
-    if (!client) return;
-    try {
-      await this.refresh(client);
-      this.syncedAt = new Date().toISOString();
-      if (this.connection.state !== "connected" && this.client === client) {
-        this.connection = { state: "connected", serverUrl: this.serverUrl() };
-      }
-      this.publish();
-    } catch (error) {
-      if (this.client !== client) return;
-      if (error instanceof McpAuthError) {
-        config.clearAuth();
-        this.client = null;
-        this.setConnection({ state: "needs-auth", serverUrl: this.serverUrl(), reason: error.message });
-        return;
-      }
-      this.setConnection({ state: "offline", serverUrl: this.serverUrl(), error: errorMessage(error) });
-    }
-    if (this.client === client) {
-      this.schedule(this.foreground ? POLL_FOREGROUND_MS : POLL_BACKGROUND_MS);
-    }
-  }
-
-  private serverUrl() {
-    return "serverUrl" in this.connection ? this.connection.serverUrl : (config.serverUrl() ?? "");
-  }
-
-  private async refresh(client: T3McpClient) {
-    const now = Date.now();
-    const shelvesDue = now - this.lastShelvesAt >= SHELF_EVERY_MS;
-    const catalogDue = now - this.lastCatalogAt >= CATALOG_EVERY_MS;
-    const [recent, working, snoozed, settled, environment, projects, capabilities] =
-      await Promise.all([
-        client.call<ListResult>("t3_thread_list", {
-          allProjects: true,
-          settled: false,
-          limit: RECENT_LIMIT,
-        }),
-        client.call<ListResult>("t3_thread_list", {
-          allProjects: true,
-          statuses: WORKING_STATUSES,
-          limit: 100,
-        }),
-        shelvesDue
-          ? client.call<ListResult>("t3_thread_list", {
-              allProjects: true,
-              snoozed: true,
-              limit: SHELF_LIMIT,
-            })
-          : null,
-        shelvesDue
-          ? client.call<ListResult>("t3_thread_list", {
-              allProjects: true,
-              settled: true,
-              limit: SHELF_LIMIT,
-            })
-          : null,
-        this.environmentId === null
-          ? client.call<{ environmentId: string }>("t3_environment_read")
-          : null,
-        catalogDue ? client.call<{ projects: ProjectSummary[] }>("t3_project_list") : null,
-        catalogDue ? client.call<{ providers: Provider[] }>("orchestrator_capabilities") : null,
-      ]);
-    this.recent = recent.threads;
-    this.recentTotal = recent.total;
-    this.working = working.threads;
-    if (snoozed) this.snoozed = snoozed.threads;
-    if (settled) this.settled = settled.threads;
-    if (shelvesDue) this.lastShelvesAt = now;
-    if (environment) this.environmentId = environment.environmentId;
-    if (projects) this.projects = projects.projects;
-    if (capabilities) {
-      this.providers = capabilities.providers
-        .map((provider) => ({
-          ...provider,
-          models: (provider.models ?? []).map((model) => ({ ...model, options: model.options ?? [] })),
-        }))
-        .filter((provider) => provider.models.length > 0);
-    }
-    if (catalogDue) this.lastCatalogAt = now;
-
-    // The list does not report approvals or questions; a one-item read of each working thread does.
-    const pending = new Map<string, number>();
-    await Promise.all(
-      this.working.map(async (thread) => {
-        const read = await client
-          .call<ReadResult>("t3_thread_read", { threadId: thread.threadId, limit: 1, maxCharsPerItem: 1 })
-          .catch(() => null);
-        if (read && read.thread.pendingRequestCount > 0) {
-          pending.set(thread.threadId, read.thread.pendingRequestCount);
-        }
-      }),
+    const serverUrl = config.serverUrl();
+    this.setConnection(
+      serverUrl
+        ? { state: "needs-auth", serverUrl, reason: "The pairing expired. Pair the companion again." }
+        : { state: "unconfigured", suggestedUrl },
     );
-    this.pending = pending;
-
-    const fresh = nextFresh({
-      fresh: this.fresh,
-      previouslyWorking: this.previouslyWorking,
-      working: this.working,
-      recent: this.recent,
-      settled: this.settled,
-    });
-    if (this.detail) fresh.delete(this.detail.threadId);
-    if (fresh.size !== this.fresh.size || [...fresh].some((id) => !this.fresh.has(id))) {
-      this.fresh = fresh;
-      config.saveFresh(fresh);
-    }
-    this.previouslyWorking = new Set(this.working.map((thread) => thread.threadId));
   }
 
-  // Thread detail: a full read when opened, then only new or still-changing messages.
-
-  openThread(threadId: string | null) {
-    this.detailGeneration += 1;
-    if (this.detailTimer) clearTimeout(this.detailTimer);
-    this.detailTimer = null;
-    if (threadId === null) {
-      this.detail = null;
-      return;
+  async pairWith(input: string, address: string | null): Promise<ActionResult> {
+    const target = parsePairingInput(input, address);
+    if (!target) {
+      return { ok: false, error: "Paste the pairing link from T3 Code, or its code together with the address." };
     }
-    if (this.fresh.delete(threadId)) {
-      config.saveFresh(this.fresh);
-      this.publish();
-    }
-    const known = [...this.recent, ...this.working, ...this.snoozed, ...this.settled].find(
-      (thread) => thread.threadId === threadId,
-    );
-    this.detail = {
-      threadId,
-      title: known?.title ?? "Thread",
-      status: known?.status ?? "idle",
-      pendingRequestCount: this.pending.get(threadId) ?? 0,
-      providerInstanceId: known?.providerInstanceId ?? null,
-      model: known?.model ?? null,
-      items: [],
-      loading: true,
-      error: null,
-    };
-    this.emitDetail(this.detail);
-    void this.pollDetail(this.detailGeneration, true);
-  }
-
-  private async pollDetail(generation: number, full: boolean) {
-    const client = this.client;
-    const current = this.detail;
-    if (!client || !current || generation !== this.detailGeneration) return;
+    this.setConnection({ state: "pairing", serverUrl: target.httpBaseUrl });
     try {
-      // Re-read from just before the first message that may still change.
-      const unstable = current.items.findIndex((item) => item.status !== "completed");
-      const from = full
-        ? undefined
-        : unstable === -1
-          ? current.items.at(-1)?.position
-          : current.items[unstable - 1]?.position;
-      let afterPosition = from;
-      let read: ReadResult;
-      const fetched: ThreadItem[] = [];
-      do {
-        read = await client.call<ReadResult>("t3_thread_read", {
-          threadId: current.threadId,
-          view: "messages",
-          limit: DETAIL_PAGE,
-          maxCharsPerItem: DETAIL_MAX_CHARS,
-          ...(afterPosition === undefined ? {} : { afterPosition }),
-        });
-        fetched.push(...read.items.map(toItem));
-        afterPosition = read.nextPosition ?? afterPosition;
-      } while (read.hasMore && read.items.length > 0);
-      if (generation !== this.detailGeneration) return;
-      const kept =
-        from === undefined ? [] : current.items.filter((item) => item.position <= from);
-      const byId = new Map<string, ThreadItem>();
-      for (const item of [...kept, ...fetched]) byId.set(item.itemId, item);
-      this.detail = {
-        ...current,
-        title: read.thread.title,
-        status: read.thread.status,
-        pendingRequestCount: read.thread.pendingRequestCount,
-        providerInstanceId: read.thread.providerInstanceId,
-        model: read.thread.model,
-        items: [...byId.values()].toSorted((left, right) => left.position - right.position),
-        loading: false,
-        error: null,
-      };
+      const pairing = await pair(target);
+      config.savePairing(pairing);
+      this.use(pairing);
+      return { ok: true, value: undefined };
     } catch (error) {
-      if (generation !== this.detailGeneration) return;
-      this.detail = { ...current, loading: false, error: errorMessage(error) };
-    }
-    this.emitDetail(this.detail);
-    const delay = isWorking(this.detail.status) ? DETAIL_ACTIVE_MS : DETAIL_IDLE_MS;
-    this.detailTimer = setTimeout(() => void this.pollDetail(generation, false), delay);
-  }
-
-  private refreshSoon() {
-    this.schedule(150);
-    if (this.detail) {
-      if (this.detailTimer) clearTimeout(this.detailTimer);
-      const generation = this.detailGeneration;
-      this.detailTimer = setTimeout(() => void this.pollDetail(generation, false), 150);
-    }
-  }
-
-  // Actions
-
-  private async act<T>(run: (client: T3McpClient) => Promise<T>): Promise<ActionResult<T>> {
-    const client = this.client;
-    if (!client) return { ok: false, error: "Not connected to T3 Code." };
-    try {
-      const value = await run(client);
-      this.refreshSoon();
-      return { ok: true, value };
-    } catch (error) {
-      if (error instanceof McpToolError) return { ok: false, error: error.message };
+      this.start(address);
       return { ok: false, error: errorMessage(error) };
     }
   }
 
-  send(threadId: string, message: string) {
-    return this.act(async (client) => {
-      await client.call("t3_thread_send", { threadId, message, mode: "auto" });
+  signOut(suggestedUrl: string | null) {
+    config.clearPairing();
+    this.disconnect();
+    this.pairing = null;
+    this.shell = emptyShell;
+    this.providers = [];
+    this.setConnection({ state: "unconfigured", suggestedUrl });
+  }
+
+  private use(pairing: Pairing) {
+    this.disconnect();
+    this.pairing = pairing;
+    this.shell = emptyShell;
+    this.retry = 0;
+    void this.connect();
+  }
+
+  private disconnect() {
+    this.generation += 1;
+    if (this.retryTimer) clearTimeout(this.retryTimer);
+    this.retryTimer = null;
+    this.cancelThread = null;
+    this.socket?.close();
+    this.socket = null;
+  }
+
+  /** Coming back to the island retries a dropped connection at once. */
+  setForeground(foreground: boolean) {
+    if (!foreground || this.socket || !this.pairing || this.connection.state !== "offline") return;
+    if (this.retryTimer) clearTimeout(this.retryTimer);
+    this.retry = 0;
+    void this.connect();
+  }
+
+  private async connect() {
+    const pairing = this.pairing;
+    if (!pairing) return;
+    const generation = this.generation;
+    let socket: RpcSocket;
+    try {
+      const url = await socketUrl(pairing.httpBaseUrl, pairing.token);
+      socket = await RpcSocket.open(url, (code) => this.onClose(generation, code));
+    } catch (error) {
+      if (generation !== this.generation) return;
+      if (error instanceof SessionEndedError) return this.sessionEnded(error.message);
+      this.setConnection({ state: "offline", serverUrl: pairing.httpBaseUrl, error: errorMessage(error) });
+      return this.scheduleReconnect();
+    }
+    if (generation !== this.generation) return socket.close();
+    this.socket = socket;
+    this.retry = 0;
+    this.setConnection({ state: "connected", serverUrl: pairing.httpBaseUrl });
+
+    void socket
+      .call<{ providers: ConfigProvider[] }>("server.getConfig", {})
+      .then((serverConfig) => {
+        this.providers = toProviders(serverConfig.providers ?? []);
+        this.publish();
+      })
+      .catch(() => undefined);
+
+    // Resumes from the last sequence after a reconnect; the server sends what was missed.
+    socket.stream(
+      "orchestration.subscribeShell",
+      this.shell.sequence >= 0
+        ? { afterSequence: this.shell.sequence, requestCompletionMarker: true }
+        : { requestCompletionMarker: true },
+      (value) => {
+        this.shell = applyShellItem(this.shell, value);
+        this.syncedAt = new Date().toISOString();
+        this.visitIfNeeded();
+        this.publish();
+        if (this.openThreadId) this.scheduleDetail();
+      },
+      () => undefined,
+    );
+    if (this.openThreadId) this.subscribeThread();
+  }
+
+  private onClose(generation: number, code: number) {
+    if (generation !== this.generation) return;
+    this.socket = null;
+    this.cancelThread = null;
+    const pairing = this.pairing;
+    if (!pairing) return;
+    // The server closes with 1000 when the token expires or is revoked.
+    void (async () => {
+      if (code === 1000 && !(await sessionIsValid(pairing.httpBaseUrl, pairing.token))) {
+        return this.sessionEnded("T3 Code ended this companion's session. Pair it again.");
+      }
+      if (generation !== this.generation) return;
+      this.setConnection({ state: "offline", serverUrl: pairing.httpBaseUrl, error: "Connection lost" });
+      this.scheduleReconnect();
+    })();
+  }
+
+  private sessionEnded(reason: string) {
+    const serverUrl = this.pairing?.httpBaseUrl ?? config.serverUrl() ?? "";
+    config.clearPairing();
+    this.disconnect();
+    this.pairing = null;
+    this.setConnection({ state: "needs-auth", serverUrl, reason });
+  }
+
+  /** The official client's ladder: a quick first retry, then jittered doubling up to a cap. */
+  private scheduleReconnect() {
+    const ceiling = this.retry === 0 ? 250 : Math.min(RECONNECT_CAP_MS, 1000 * 2 ** (this.retry + 1));
+    const delay = ceiling / 2 + (Math.random() * ceiling) / 2;
+    this.retry += 1;
+    if (this.retryTimer) clearTimeout(this.retryTimer);
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null;
+      void this.connect();
+    }, delay);
+  }
+
+  // ── The open thread ────────────────────────────────────────────────────────────────────────
+
+  openThread(threadId: string | null) {
+    this.cancelThread?.();
+    this.cancelThread = null;
+    this.openThreadId = threadId;
+    this.thread = emptyThreadStream;
+    this.visitedCompletion = null;
+    this.visitSent = false;
+    if (!threadId) return;
+    this.emitDetail(this.detail());
+    if (this.socket) this.subscribeThread();
+    this.visitIfNeeded();
+  }
+
+  private subscribeThread() {
+    const threadId = this.openThreadId;
+    const socket = this.socket;
+    if (!threadId || !socket) return;
+    this.cancelThread = socket.stream(
+      "orchestration.subscribeThread",
+      this.thread.sequence >= 0
+        ? { threadId, afterSequence: this.thread.sequence, requestCompletionMarker: true }
+        : { threadId, requestCompletionMarker: true },
+      (value) => {
+        if (this.openThreadId !== threadId) return;
+        this.thread = applyThreadItem(this.thread, threadId, value);
+        this.scheduleDetail();
+      },
+      () => undefined,
+    );
+  }
+
+  private scheduleDetail() {
+    if (this.detailTimer) return;
+    this.detailTimer = setTimeout(() => {
+      this.detailTimer = null;
+      if (this.openThreadId) this.emitDetail(this.detail());
+    }, PUBLISH_DELAY_MS);
+  }
+
+  /**
+   * Marks the open thread read in T3 Code when it opens and again whenever a new run completes,
+   * so it stops showing unread everywhere. Visiting does not trigger itself again.
+   */
+  private visitIfNeeded() {
+    const threadId = this.openThreadId;
+    const shellThread = threadId ? this.shell.threads.get(threadId) : undefined;
+    if (!threadId || !shellThread || !this.socket) return;
+    const completion = shellThread.latestRunCompletedAt ?? shellThread.createdAt;
+    if (this.visitSent && completion === this.visitedCompletion) return;
+    const opened = !this.visitSent;
+    this.visitSent = true;
+    this.visitedCompletion = completion;
+    const visitedAt = [shellThread.updatedAt, shellThread.latestRunCompletedAt ?? ""].sort().at(-1) ?? shellThread.updatedAt;
+    void this.dispatch({ type: "thread.visit", threadId, visitedAt, ...(opened ? { opened: true } : {}) }).catch(
+      () => undefined,
+    );
+  }
+
+  private detail(): ThreadDetail {
+    const threadId = this.openThreadId ?? "";
+    const shellThread: RawThreadShell | undefined = this.shell.threads.get(threadId);
+    const projection = this.thread.projection;
+    const messages = (projection?.messages ?? [])
+      .filter((message) => message.role === "user" || message.role === "assistant")
+      .toSorted((left, right) => Date.parse(left.createdAt) - Date.parse(right.createdAt));
+    const requests = projection ? pendingRequests(projection).map((item) => toRequest(threadId, item)) : [];
+    const rolledUp = pendingByListedThread(this.shell.threads).get(threadId);
+    const hiddenRequestCount = (rolledUp?.threadIds ?? []).filter((id) => id !== threadId).length;
+    return {
+      threadId,
+      title: shellThread?.title ?? "Thread",
+      status: (shellThread?.status ?? "idle") as ThreadStatus,
+      pendingRequestCount: requests.length + hiddenRequestCount,
+      providerInstanceId: shellThread?.modelSelection?.instanceId ?? null,
+      model: shellThread?.modelSelection?.model ?? null,
+      items: messages.map((message, index) => ({
+        itemId: message.id,
+        position: index,
+        type: message.role === "user" ? "user_message" : "assistant_message",
+        text: message.text,
+        status: message.streaming ? "in_progress" : "completed",
+        createdBy: message.role,
+        updatedAt: message.updatedAt,
+      })),
+      requests,
+      hiddenRequestCount,
+      loading: projection === null,
+      error: this.socket ? null : this.connection.state === "offline" ? "Reconnecting to T3 Code…" : null,
+    };
+  }
+
+  // ── Actions ────────────────────────────────────────────────────────────────────────────────
+
+  private async dispatch(command: Record<string, unknown>) {
+    const socket = this.socket;
+    if (!socket) throw new Error("Not connected to T3 Code.");
+    return socket.call("orchestration.dispatchCommand", { commandId: randomUUID(), ...command });
+  }
+
+  private async act<T>(run: () => Promise<T>): Promise<ActionResult<T>> {
+    try {
+      return { ok: true, value: await run() };
+    } catch (error) {
+      return { ok: false, error: error instanceof RpcError ? error.message : errorMessage(error) };
+    }
+  }
+
+  send(threadId: string, text: string, modelSelection: ModelSelection | null) {
+    return this.act(async () => {
+      await this.dispatch({
+        type: "message.dispatch",
+        threadId,
+        messageId: randomUUID(),
+        text,
+        attachments: [],
+        createdBy: "user",
+        creationSource: "web",
+        dispatchMode: { type: "start_immediately" },
+        deliveryIntent: "auto",
+        // Switching on the next message works for every provider; a live switch does not.
+        ...(modelSelection ? { modelSelection } : {}),
+      });
     });
   }
 
-  launch(input: { projectId: string; message: string; modelSelection: ModelSelection | null }) {
-    return this.act(async (client) => {
-      const firstLine = input.message.trim().split("\n")[0] ?? "New thread";
-      const result = await client.call<{ threadId: string }>("t3_thread_launch", {
-        title: firstLine.length > 60 ? `${firstLine.slice(0, 57)}…` : firstLine,
-        projectId: input.projectId,
-        message: input.message,
-        ...(input.modelSelection ? { modelSelection: input.modelSelection } : {}),
-      });
-      return { threadId: result.threadId };
+  respond(threadId: string, requestId: string, response: RequestResponse) {
+    return this.act(async () => {
+      await this.dispatch({ type: "runtime-request.respond", threadId, requestId, ...response });
     });
   }
 
   organize(threadId: string, action: OrganizeAction, snoozedUntil?: string) {
-    return this.act(async (client) => {
-      await client.call("t3_thread_organize", {
-        threadId,
-        action,
-        ...(snoozedUntil ? { snoozedUntil } : {}),
-      });
-      if (action === "settle" && this.fresh.delete(threadId)) config.saveFresh(this.fresh);
-    });
-  }
-
-  configure(threadId: string, modelSelection: ModelSelection) {
-    return this.act(async (client) => {
-      await client.call("t3_thread_configure", { threadId, modelSelection });
+    const commands: Record<OrganizeAction, Record<string, unknown>> = {
+      settle: { type: "thread.settle", threadId },
+      unsettle: { type: "thread.unsettle", threadId, reason: "user" },
+      snooze: { type: "thread.snooze", threadId, snoozedUntil },
+      unsnooze: { type: "thread.unsnooze", threadId, reason: "user" },
+      mark_unread: { type: "thread.mark-unread", threadId },
+    };
+    return this.act(async () => {
+      await this.dispatch(commands[action]);
     });
   }
 
   interrupt(threadId: string) {
-    return this.act(async (client) => {
-      await client.call("t3_thread_interrupt", { threadId });
+    return this.act(async () => {
+      await this.dispatch({ type: "thread.stop", threadId });
+    });
+  }
+
+  launch(input: { projectId: string; message: string; modelSelection: ModelSelection | null }) {
+    return this.act(async () => {
+      const socket = this.socket;
+      if (!socket) throw new Error("Not connected to T3 Code.");
+      const project = this.shell.projects.get(input.projectId);
+      const modelSelection = input.modelSelection ?? project?.defaultModelSelection ?? null;
+      if (!modelSelection) throw new Error("Choose a model first.");
+      const firstLine = input.message.trim().split("\n")[0] ?? "New thread";
+      const result = await socket.call<{ threadId: string }>("orchestration.launchThread", {
+        commandId: randomUUID(),
+        creationSource: "web",
+        projectId: input.projectId,
+        title: firstLine.length > 60 ? `${firstLine.slice(0, 57)}…` : firstLine,
+        generateTitle: true,
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        workspaceStrategy: { type: "root" },
+        initialMessage: { messageId: randomUUID(), text: input.message, attachments: [] },
+      });
+      return { threadId: result.threadId };
     });
   }
 }
 
-function toItem(item: ReadResult["items"][number]): ThreadItem {
-  return {
-    itemId: item.itemId,
-    position: item.position,
-    type: item.type,
-    text: item.text ?? "",
-    status: item.status,
-    createdBy: item.createdBy,
-    updatedAt: item.updatedAt,
-  };
+function toProviders(providers: ConfigProvider[]): Provider[] {
+  return providers
+    .filter((provider) => provider.enabled && provider.installed && provider.status === "ready")
+    .map((provider) => ({
+      providerInstanceId: provider.instanceId,
+      driverKind: provider.driver,
+      displayName: provider.displayName ?? provider.instanceId,
+      models: provider.models.map((model) => ({
+        id: model.slug,
+        ...(model.name ? { label: model.name } : {}),
+        // Select options only; booleans such as fast mode stay at their defaults.
+        options: (model.capabilities?.optionDescriptors ?? [])
+          .filter((descriptor) => Array.isArray(descriptor.options))
+          .map((descriptor) => {
+            const values = (descriptor.options ?? []).map((option) => option.id);
+            const fallback = (descriptor.options ?? []).find((option) => option.isDefault)?.id;
+            const current = typeof descriptor.currentValue === "string" ? descriptor.currentValue : fallback;
+            return { id: descriptor.id, values, ...(current ? { default: current } : {}) };
+          }),
+      })),
+    }))
+    .filter((provider) => provider.models.length > 0);
 }
 
-export type { ThreadStatus };
+function toRequest(threadId: string, item: RawTurnItem): PendingRequest {
+  if (item.type === "user_input_request") {
+    return {
+      threadId,
+      requestId: item.requestId ?? "",
+      kind: "question",
+      title: item.title ?? null,
+      detail: null,
+      decisions: [],
+      questions: (item.questions ?? []).map((question) => ({
+        id: question.id,
+        header: question.header ?? null,
+        question: question.question,
+        options: (question.options ?? []).map((option) => ({
+          label: option.label,
+          value: option.value ?? option.label,
+          description: option.description ?? null,
+        })),
+        multiSelect: question.multiSelect === true,
+        allowCustomAnswer: question.allowCustomAnswer === true,
+      })),
+    };
+  }
+  return {
+    threadId,
+    requestId: item.requestId ?? "",
+    kind: "approval",
+    title: item.prompt ?? item.title ?? null,
+    detail: item.reason ?? null,
+    decisions:
+      item.options && item.options.length > 0
+        ? item.options.map((option) => ({ decision: option.decision, label: option.label, warning: option.warning ?? null }))
+        : [
+            { decision: "accept", label: "Approve", warning: null },
+            { decision: "decline", label: "Decline", warning: null },
+          ],
+    questions: [],
+  };
+}

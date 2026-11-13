@@ -16,8 +16,8 @@ export interface Mood {
 export function useMood(state: CompanionState | null): Mood {
   const threads = state ? [...state.inbox, ...state.working] : [];
   const attention = threads.filter((thread) => thread.pendingRequestCount > 0).length;
-  const failed = threads.filter((thread) => thread.status === "failed").length;
-  const done = state?.inbox.filter((thread) => thread.fresh && thread.status !== "failed").length ?? 0;
+  const failed = threads.filter((thread) => thread.status === "failed" && thread.unread).length;
+  const done = state?.inbox.filter((thread) => thread.unread && thread.status !== "failed").length ?? 0;
   const working = state?.working.length ?? 0;
   const connected = state?.connection.state === "connected";
 

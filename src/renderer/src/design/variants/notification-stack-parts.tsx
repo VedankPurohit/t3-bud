@@ -107,7 +107,7 @@ export function threadStatus(thread: ThreadSummary): Status | null {
     return { label: "Working", icon: CircleDashedIcon, className: "text-info-foreground", duration: relativeTime(thread.updatedAt).replace("now", "1m") };
   }
   if (thread.snoozed) return { label: "Snoozed", icon: AlarmClockIcon, className: "text-info-foreground" };
-  if (thread.fresh) return { label: "Done", icon: CircleCheckIcon, className: "text-success-foreground" };
+  if (thread.unread) return { label: "Done", icon: CircleCheckIcon, className: "text-success-foreground" };
   return null;
 }
 

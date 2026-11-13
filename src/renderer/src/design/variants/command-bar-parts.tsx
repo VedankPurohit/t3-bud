@@ -217,7 +217,7 @@ export function topStatusOf(thread: ThreadSummary): TopStatusKind | null {
   if (thread.pendingRequestCount > 0) return "approval";
   if (["preparing", "queued", "starting", "running", "waiting"].includes(thread.status)) return "working";
   if (thread.status === "failed") return "failed";
-  return thread.fresh ? "done" : null;
+  return thread.unread ? "done" : null;
 }
 
 export function TopStatus(props: { kind: TopStatusKind; className?: string }) {
@@ -451,7 +451,7 @@ export function ThreadRow(props: {
           className={cn(
             "truncate",
             props.recede ? "text-foreground/75" : "text-foreground",
-            thread.fresh && "font-medium",
+            thread.unread && "font-medium",
           )}
         >
           {thread.title}

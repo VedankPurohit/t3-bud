@@ -42,7 +42,7 @@ export function App() {
   // Announces a thread the moment it finishes; threads already done at launch stay quiet.
   useEffect(() => {
     if (!state) return;
-    const fresh = state.inbox.filter((thread) => thread.fresh);
+    const fresh = state.inbox.filter((thread) => thread.unread);
     if (announced.current === null) {
       announced.current = new Set(fresh.map((thread) => thread.threadId));
       return;

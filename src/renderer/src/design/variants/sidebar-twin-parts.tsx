@@ -252,7 +252,7 @@ function topStatusKey(thread: ThreadSummary): keyof typeof TOP_STATUS | null {
   if (thread.pendingRequestCount > 0) return "approval";
   if (isWorking(thread.status)) return "working";
   if (thread.status === "failed") return "failed";
-  if (thread.fresh) return "done";
+  if (thread.unread) return "done";
   return null;
 }
 
@@ -350,7 +350,7 @@ export function CardRow(props: { thread: ThreadSummary; hovered?: boolean }) {
                 recede ? "font-normal" : "font-medium",
                 recede
                   ? "text-foreground/75 group-hover/sidebar-row:text-foreground"
-                  : thread.status === "failed" && !thread.fresh
+                  : thread.status === "failed" && !thread.unread
                     ? "text-foreground/95"
                     : "text-foreground",
                 hovered && "text-foreground",

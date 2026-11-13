@@ -10,7 +10,8 @@ import { ProviderGlyph } from "./icons";
    ComposerControl, ComposerPrimaryActions, ProviderModelPicker, ModelPickerSidebar, ModelListRow,
    ComposerModelEffort, EffortGlyph), MIT License, with logic replaced. */
 
-const EFFORT = "reasoningEffort";
+/** Providers name their reasoning option differently: Codex `reasoningEffort`, Claude `effort`. */
+const EFFORT_IDS = new Set(["reasoningEffort", "effort"]);
 
 const effortLabel = (value: string) =>
   ({ xhigh: "Extra high", max: "Max", ultra: "Ultra" })[value] ?? value.charAt(0).toUpperCase() + value.slice(1);
@@ -49,9 +50,10 @@ function effortOf(providers: readonly Provider[], selection: ModelSelection | nu
   const option = providers
     .find((provider) => provider.providerInstanceId === selection?.instanceId)
     ?.models.find((model) => model.id === selection?.model)
-    ?.options.find((candidate) => candidate.id === EFFORT);
+    ?.options.find((candidate) => EFFORT_IDS.has(candidate.id));
   if (!option) return null;
-  const value = selection?.options?.find((candidate) => candidate.id === EFFORT)?.value ?? option.default ?? null;
+  const picked = selection?.options?.find((candidate) => candidate.id === option.id)?.value;
+  const value = (typeof picked === "string" ? picked : null) ?? option.default ?? null;
   return { option, value };
 }
 
@@ -80,10 +82,10 @@ function ModelPicker(props: {
     const option = providers
       .find((candidate) => candidate.providerInstanceId === instanceId)
       ?.models.find((candidate) => candidate.id === model)
-      ?.options.find((candidate) => candidate.id === EFFORT);
+      ?.options.find((candidate) => EFFORT_IDS.has(candidate.id));
     const keep = effort?.value && option?.values.includes(effort.value) ? effort.value : option?.default;
     const chosen = value ?? keep;
-    props.onChange({ instanceId, model, ...(option && chosen ? { options: [{ id: EFFORT, value: chosen }] } : {}) });
+    props.onChange({ instanceId, model, ...(option && chosen ? { options: [{ id: option.id, value: chosen }] } : {}) });
     if (!option || value !== undefined) props.onClose();
   };
   const railButton =

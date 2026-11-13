@@ -22,12 +22,12 @@ import { ProviderGlyph } from "./icons";
 
 export type Shelf = "inbox" | "working" | "snoozed" | "settled";
 
-/** T3's ProjectFavicon falls back to this glyph; MCP serves no favicons. */
+/** T3's ProjectFavicon falls back to this glyph; the companion fetches no favicons. */
 export function ProjectGlyph({ className }: { className?: string }) {
   return <FolderCodeIcon aria-hidden className={cn("shrink-0 text-icon-muted", className)} />;
 }
 
-/** `TOP_STATUS_ICONS` and the `topStatus` mapping, cut to the states MCP reports. */
+/** `TOP_STATUS_ICONS` and the `topStatus` mapping, cut to the states the shell stream reports. */
 function topStatus(thread: ThreadSummary, shelf: Shelf) {
   if (thread.pendingRequestCount > 0)
     return { label: "Needs you", Icon: ShieldQuestionIcon, className: "text-warning-foreground" };
@@ -35,7 +35,7 @@ function topStatus(thread: ThreadSummary, shelf: Shelf) {
     return { label: "Working", Icon: CircleDashedIcon, className: "text-info-foreground" };
   if (thread.status === "failed")
     return { label: "Failed", Icon: CircleAlertIcon, className: "text-error-foreground" };
-  if (thread.fresh) return { label: "Done", Icon: CircleCheckIcon, className: "text-success-foreground" };
+  if (thread.unread) return { label: "Done", Icon: CircleCheckIcon, className: "text-success-foreground" };
   return null;
 }
 
@@ -65,7 +65,7 @@ export function ThreadRow(props: {
   const lookups = useIsland();
   const status = topStatus(thread, shelf);
   const settled = shelf === "settled";
-  const recede = settled || shelf === "snoozed" || (status === null && !thread.fresh);
+  const recede = settled || shelf === "snoozed" || (status === null && !thread.unread);
   const trailing: ReactNode =
     shelf === "snoozed" && thread.snoozedUntil ? (
       <span className="inline-flex items-center gap-1 text-info-foreground">

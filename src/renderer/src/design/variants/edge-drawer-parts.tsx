@@ -171,7 +171,7 @@ export function rowStatus(thread: ThreadSummary): RowStatus {
   if (thread.pendingRequestCount > 0) return "approval";
   if (thread.status === "running") return "working";
   if (thread.status === "failed") return "failed";
-  if (thread.fresh) return "done";
+  if (thread.unread) return "done";
   return null;
 }
 

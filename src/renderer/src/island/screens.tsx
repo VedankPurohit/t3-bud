@@ -9,7 +9,7 @@ import { Button, InlineButton } from "../t3/ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "../t3/ui/empty";
 import { Input } from "../t3/ui/input";
 import { Toggle, ToggleGroup } from "../t3/ui/toggle-group";
-import { PendingRequestRow, ThreadHeader, Timeline } from "./chat";
+import { HiddenRequestRow, RequestCard, ThreadHeader, Timeline } from "./chat";
 import { Composer } from "./composer";
 import { useIsland } from "./context";
 import { ProjectGlyph, ThreadRow, type Shelf } from "./rows";
@@ -143,7 +143,6 @@ export function InboxScreen(props: {
           ) : null}
         </Empty>
       )}
-      {/* MCP has no push, so the footer owns up to polling with the last sync time. */}
       <div className="flex h-8 shrink-0 items-center gap-1.5 border-t border-sidebar-border px-3 text-xs text-muted-foreground tabular-nums">
         {props.shelf === "inbox" && state.inboxTotal > 0 ? (
           <>
@@ -220,16 +219,26 @@ export function ThreadScreen(props: {
           ) : (
             <Timeline detail={detail} />
           )}
-          {running && pending === 0 ? (
+          {running && pending === 0 && (detail?.items.at(-1)?.status ?? "completed") === "completed" ? (
             <p className="flex items-center gap-1.5 px-1 text-xs text-muted-foreground">
               <span className="inline-block size-1.5 rounded-full bg-info" />
               Working…
             </p>
           ) : null}
-          {pending > 0 ? (
-            <div className="border-t border-border/60 pt-2">
-              <PendingRequestRow count={pending} onOpenInT3={openInT3} />
-            </div>
+          {detail?.requests.map((request) => (
+            <RequestCard
+              key={request.requestId}
+              request={request}
+              onRespond={async (response) => {
+                stick.current = true;
+                const result = await api().respond(request.threadId, request.requestId, response);
+                if (!result.ok) props.onError(result.error);
+                return result.ok;
+              }}
+            />
+          ))}
+          {detail && detail.hiddenRequestCount > 0 ? (
+            <HiddenRequestRow count={detail.hiddenRequestCount} onOpenInT3={openInT3} />
           ) : null}
           {detail?.error ? <p className="px-1 text-xs text-destructive-foreground">{detail.error}</p> : null}
         </div>
@@ -241,21 +250,13 @@ export function ThreadScreen(props: {
         selection={selection}
         running={running}
         onStop={() => void api().interrupt(props.threadId)}
-        onSelectionChange={(next) => {
-          setOverride(next);
-          void api()
-            .configure(props.threadId, next)
-            .then((result) => {
-              if (!result.ok) {
-                setOverride(null);
-                props.onError(result.error);
-              }
-            });
-        }}
+        // A model change applies from the next message, which works with every provider.
+        onSelectionChange={setOverride}
         onSubmit={async (message) => {
           stick.current = true;
-          const result = await api().send(props.threadId, message);
+          const result = await api().send(props.threadId, message, override);
           if (!result.ok) props.onError(result.error);
+          else setOverride(null);
           return result.ok;
         }}
       />
@@ -393,72 +394,73 @@ export function NewThreadScreen(props: {
 
 export function ConnectScreen(props: { connection: Connection; onMinimize: () => void }) {
   const { connection } = props;
-  const initial =
-    connection.state === "unconfigured" ? (connection.suggestedUrl ?? "http://127.0.0.1:3773") : connection.serverUrl;
-  const [url, setUrl] = useState(initial);
+  const knownAddress =
+    connection.state === "unconfigured" ? connection.suggestedUrl : "serverUrl" in connection ? connection.serverUrl : null;
+  const [pairing, setPairing] = useState("");
+  const [address, setAddress] = useState(knownAddress ?? "http://127.0.0.1:3773");
   const [error, setError] = useState<string | null>(null);
-  const busy = connection.state === "authorizing";
+  const busy = connection.state === "pairing";
   const connect = async () => {
     setError(null);
-    let parsed: URL;
-    try {
-      parsed = new URL(url.includes("://") ? url : `http://${url}`);
-    } catch {
-      setError("That is not a valid address.");
-      return;
-    }
-    const result = await api().connect(parsed.origin);
+    const result = await api().connect(pairing, address.trim() || null);
     if (!result.ok) setError(result.error);
   };
   const strong = (text: string) => <b className="font-medium text-foreground">{text}</b>;
+  const bareCode = /^[A-Za-z0-9]{12}$/.test(pairing.trim());
 
   return (
     <PopoverPanel surface="sidebar">
       <div className="selectable flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-4 pt-2 pb-4">
         <div>
           <div className="flex items-center justify-between gap-2">
-            <h2 className="text-base font-semibold">Connect to T3 Code</h2>
+            <h2 className="text-base font-semibold">Pair with T3 Code</h2>
             <MinimizeButton onMinimize={props.onMinimize} />
           </div>
           <p className="mt-1 text-sm text-muted-foreground">
             {connection.state === "needs-auth"
               ? connection.reason
-              : "The companion uses T3 Code's MCP server, the same way Claude Code or Codex can."}
+              : "The companion connects like T3 Code's phone app: live updates, and approvals answered right here."}
           </p>
         </div>
+        <ol className="flex list-decimal flex-col gap-1.5 ps-4 text-sm text-muted-foreground">
+          <li>
+            In T3 Code, open {strong("Settings → Sharing & access")}.
+          </li>
+          <li>
+            Under {strong("Authorized clients")}, choose {strong("Create link")} and keep the default permissions.
+          </li>
+          <li>Copy the link and paste it here. It works once, for 5 minutes.</li>
+        </ol>
         <label className="flex flex-col gap-1.5">
-          <span className="text-xs font-medium text-muted-foreground">T3 Code address</span>
+          <span className="text-xs font-medium text-muted-foreground">Pairing link</span>
           <Input
-            value={url}
+            autoFocus
+            value={pairing}
             spellCheck={false}
-            onChange={(event) => setUrl(event.target.value)}
+            placeholder="http://…/pair#token=…"
+            onChange={(event) => setPairing(event.target.value)}
             onKeyDown={(event) => {
               if (event.key === "Enter") void connect();
             }}
             className="font-mono"
           />
-          <span className="text-xs text-muted-foreground">
-            {connection.state === "unconfigured" && connection.suggestedUrl
-              ? "Found T3 Code running on this Mac."
-              : "Use localhost, an https address such as Tailscale HTTPS, or your T3 Connect address."}
-          </span>
         </label>
-        <ol className="flex list-decimal flex-col gap-1.5 ps-4 text-sm text-muted-foreground">
-          <li>
-            In T3 Code, press ⌘K and choose {strong("Use T3 Code in another app (MCP)")}.
-          </li>
-          <li>
-            Pick {strong("Something else…")}, set access to {strong("Full access")}, and choose {strong("Get code")}.
-          </li>
-          <li>Click Connect and paste the code on the page that opens.</li>
-        </ol>
+        {bareCode ? (
+          <label className="flex flex-col gap-1.5">
+            <span className="text-xs font-medium text-muted-foreground">T3 Code address</span>
+            <Input value={address} spellCheck={false} onChange={(event) => setAddress(event.target.value)} className="font-mono" />
+            <span className="text-xs text-muted-foreground">
+              {knownAddress ? "Found T3 Code running on this Mac." : "Where T3 Code runs, such as a Tailscale address."}
+            </span>
+          </label>
+        ) : null}
         <p className="text-xs text-muted-foreground">
-          Full access lets the companion reply to and organize threads that run in full access. Sign-in lasts 30
-          days.
+          The pairing lasts 30 days. Revoke it any time under Authorized clients. On the host you can also run{" "}
+          <code className="font-mono">t3 pair</code>.
         </p>
         {error ? <p className="text-sm text-destructive-foreground">{error}</p> : null}
-        <Button className="mt-auto" disabled={busy} onClick={() => void connect()}>
-          {busy ? "Waiting for approval…" : "Connect"}
+        <Button className="mt-auto" disabled={busy || pairing.trim().length === 0} onClick={() => void connect()}>
+          {busy ? "Pairing…" : "Pair"}
         </Button>
       </div>
     </PopoverPanel>

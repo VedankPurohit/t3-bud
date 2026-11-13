@@ -6,7 +6,7 @@ const api = () => window.companion;
 
 export function useCompanionState(): CompanionState | null {
   const [state, setState] = useState<CompanionState | null>(null);
-  // Subscribes to the main process, which owns the MCP connection and polling.
+  // Subscribes to the main process, which owns the T3 server connection.
   useEffect(() => {
     let active = true;
     void api()
