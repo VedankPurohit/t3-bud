@@ -32,7 +32,7 @@ for (const theme of themes) {
   const page = await browser.newPage({ deviceScaleFactor: 2, viewport: { width: 2400, height: 1600 } });
   page.on("pageerror", (error) => console.error(`pageerror: ${error.message}`));
   const url = pathToFileURL(resolve(values.dist, "design.html"));
-  url.search = new URLSearchParams({ theme, ...(values.variant ? { variant: values.variant } : {}) }).toString();
+  url.search = new URLSearchParams({ theme, ...(values.variant ? { variant: values.variant } : { all: "1" }) }).toString();
   await page.goto(url.href);
   await page.waitForTimeout(600);
   for (const frame of await page.locator("[data-shot]").all()) {

@@ -1,0 +1,22 @@
+/* The floating window: transparent around the panel, never scrolling as a page. */
+/* Only the mascot and its panel paint; the window itself is transparent. */
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  user-select: none;
+}
+
+/* T3 Code paints the page; the companion window must stay see-through around its panel. */
+html,
+html body,
+html #root {
+  background: transparent !important;
+}
+
+.selectable {
+  user-select: text;
+}
+
