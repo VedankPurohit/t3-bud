@@ -27,7 +27,7 @@ export function App() {
   const announced = useRef<Set<string> | null>(null);
 
   const working = state?.working ?? [];
-  const foldedWidth = capsuleWidth(working.length, mood);
+  const foldedWidth = capsuleWidth(working.length, mood, state?.connection.state);
 
   // The window always matches what the island shows, so nothing invisible blocks clicks below it.
   useEffect(() => {

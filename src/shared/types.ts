@@ -163,6 +163,8 @@ export interface CompanionApi {
   move(position: { x: number; y: number; settled: boolean }): Promise<void>;
   /** The window was asked to close (Cmd+W); the island folds instead. */
   onFoldRequest(listener: () => void): () => void;
+  /** The cursor, relative to the window's top-left, whenever it moves anywhere on screen. */
+  onCursor(listener: (point: { x: number; y: number }) => void): () => void;
   openThread(threadId: string | null): Promise<void>;
   onThreadDetail(listener: (detail: ThreadDetail) => void): () => void;
   /** Sends a message; a model selection switches the model starting with this turn. */

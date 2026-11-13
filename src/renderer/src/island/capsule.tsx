@@ -32,24 +32,29 @@ export function Capsule({ className, ...props }: ComponentProps<"div">) {
   );
 }
 
-export function capsuleWidth(working: number, mood: Mood) {
+/** Connected with nothing working, finished, or waiting: the island shrinks to just the orb. */
+export function isAllQuiet(working: number, mood: Mood, connection: string | undefined) {
+  return connection === "connected" && working === 0 && mood.done === 0 && mood.attention === 0;
+}
+
+export function capsuleWidth(working: number, mood: Mood, connection: string | undefined) {
+  if (isAllQuiet(working, mood, connection)) return CAPSULE_HEIGHT;
   return working > 0 || mood.done > 0 || mood.attention > 0 ? CAPSULE_LIVE_WIDTH : CAPSULE_QUIET_WIDTH;
 }
 
-/** The folded island: blob, one live line, and a provider mark per working thread. */
+/** The folded island: the orb alone when all is quiet, else orb, one live line, and a mark per working thread. */
 export function IslandCapsule(props: { mood: Mood; working: readonly ThreadSummary[]; onClick: () => void }) {
   const lookups = useIsland();
   const { mood, working } = props;
   const drag = useIslandDrag(props.onClick);
   const connection = lookups.state.connection.state;
-  const width = capsuleWidth(working.length, mood);
+  const width = capsuleWidth(working.length, mood, connection);
+  const orbOnly = isAllQuiet(working.length, mood, connection);
   const line =
     connection === "offline" ? (
       <span className="text-warning">Can't reach T3 Code</span>
     ) : connection !== "connected" ? (
       <span className="text-muted-foreground">Connect T3 Code</span>
-    ) : working.length === 0 && mood.done === 0 && mood.attention === 0 ? (
-      <span className="text-muted-foreground">All quiet</span>
     ) : (
       <>
         {working.length > 0 ? <>{working.length} working</> : null}
@@ -77,10 +82,18 @@ export function IslandCapsule(props: { mood: Mood; working: readonly ThreadSumma
         if (event.key === "Enter" || event.key === " ") props.onClick();
       }}
       style={{ width, height: CAPSULE_HEIGHT }}
-      className="cursor-grab touch-none gap-1.5 rounded-full ps-1.5 pe-2 transition-[width] duration-200 ease-out outline-none select-none focus-visible:ring-2 focus-visible:ring-ring active:cursor-grabbing"
+      className={cn(
+        "cursor-grab touch-none rounded-full transition-[width] duration-200 ease-out outline-none select-none focus-visible:ring-2 focus-visible:ring-ring active:cursor-grabbing",
+        orbOnly ? "justify-center bg-transparent ring-0" : "gap-1.5 ps-1.5 pe-2",
+      )}
     >
-      <CompanionMascot mood={mood.mood} hopKey={mood.hopKey} size={24} className="-my-1 shrink-0" />
-      <span className="min-w-0 flex-1 truncate text-xs font-medium tabular-nums">{line}</span>
+      <CompanionMascot
+        mood={mood.mood}
+        hopKey={mood.hopKey}
+        size={orbOnly ? CAPSULE_HEIGHT : 24}
+        className={cn("shrink-0 transition-[width,height] duration-200 ease-out", !orbOnly && "-my-1")}
+      />
+      {orbOnly ? null : <span className="min-w-0 flex-1 truncate text-xs font-medium tabular-nums">{line}</span>}
       {working.length > 0 ? (
         // T3's stacked provider marks, one per working thread, amber when it waits on the user.
         <span className="flex shrink-0 items-center -space-x-1" aria-hidden>

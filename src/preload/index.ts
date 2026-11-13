@@ -20,6 +20,12 @@ const api: CompanionApi = {
   resize: (size) => ipcRenderer.invoke("companion:resize", size),
   move: (position) => ipcRenderer.invoke("companion:move", position),
   onFoldRequest: subscribe<void>("companion:fold"),
+  onCursor: (listener) => {
+    const unsubscribe = subscribe<{ x: number; y: number }>("companion:cursor")(listener);
+    // A new listener needs the current position even while the cursor stands still.
+    ipcRenderer.send("companion:cursor-sync");
+    return unsubscribe;
+  },
   openThread: (threadId) => ipcRenderer.invoke("companion:open-thread", threadId),
   onThreadDetail: subscribe<ThreadDetail>("companion:thread-detail"),
   send: (threadId, message, selection) => ipcRenderer.invoke("companion:send", threadId, message, selection),

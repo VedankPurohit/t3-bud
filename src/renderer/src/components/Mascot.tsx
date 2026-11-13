@@ -1,17 +1,16 @@
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 
+import { gazeOffset } from "../lib/gaze";
 import { cn } from "../t3/lib/utils";
 
 export type CompanionMood = "idle" | "working" | "done" | "attention" | "failed";
 
 const BLINK_MIN_MS = 3_200;
 const BLINK_SPREAD_MS = 3_800;
-const GLANCE_EVERY_MS = 2_600;
-
 /**
  * The night-sky orb from T3 Tots (github.com/Deepusleepy/t3-tots, MIT), redrawn as SVG so its eyes
- * can blink and react. It animates only on events (a blink, a glance while agents work, a hop on
- * news), so an always-visible window never repaints continuously.
+ * can blink and react. It animates only on events (waking up, a blink, a hop on news, the cursor
+ * moving), so an always-visible window never repaints continuously.
  */
 export function CompanionMascot(props: {
   mood: CompanionMood;
@@ -23,7 +22,9 @@ export function CompanionMascot(props: {
   const { mood, size } = props;
   const id = useId();
   const [blinking, setBlinking] = useState(false);
-  const [glancing, setGlancing] = useState(false);
+  const [waking, setWaking] = useState(true);
+  const svgRef = useRef<SVGSVGElement>(null);
+  const gazeRef = useRef<SVGGElement>(null);
 
   // Schedules idle blinks on a wall-clock timer.
   useEffect(() => {
@@ -41,23 +42,31 @@ export function CompanionMascot(props: {
     return () => clearTimeout(timer);
   }, []);
 
-  // While agents work the eyes glance across now and then, instead of a looping animation.
+  // Eyes follow the cursor anywhere on screen. The transform is written directly, so gaze never
+  // re-renders React; the design gallery has no companion bridge and keeps still eyes.
   useEffect(() => {
-    if (mood !== "working") return;
-    const timer = setInterval(() => {
-      if (!document.hidden) setGlancing(true);
-    }, GLANCE_EVERY_MS);
-    return () => clearInterval(timer);
-  }, [mood]);
+    if (!("companion" in window) || matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    let last = "";
+    return window.companion.onCursor((cursor) => {
+      const svg = svgRef.current;
+      const gaze = gazeRef.current;
+      if (!svg || !gaze) return;
+      const offset = gazeOffset(svg.getBoundingClientRect(), cursor);
+      const next = `translate(${offset.x}px, ${offset.y}px)`;
+      if (next === last) return;
+      last = next;
+      gaze.style.transform = next;
+    });
+  }, []);
 
   const happy = mood === "done";
   const wide = mood === "attention";
   const sad = mood === "failed";
   return (
     <svg
+      ref={svgRef}
       viewBox="0 0 64 64"
-      width={size}
-      height={size}
+      style={{ width: size, height: size }}
       aria-hidden
       className={cn("overflow-visible", props.className)}
       data-mood={mood}
@@ -122,11 +131,12 @@ export function CompanionMascot(props: {
         </g>
         <circle cx="32" cy="32" r="30" fill="none" stroke="#2c2475" strokeWidth="1.2" opacity="0.8" />
         {/* The eyes: two slanted, glowing pills; happy arcs when a thread is done. */}
+        <g ref={gazeRef} className="mascot-gaze">
         <g
-          className={cn("mascot-eyes", blinking && "mascot-blink", glancing && "mascot-glance")}
+          className={cn("mascot-eyes", waking ? "mascot-wake" : blinking && "mascot-blink")}
           onAnimationEnd={(event) => {
             if (event.animationName === "mascot-blink") setBlinking(false);
-            if (event.animationName === "mascot-glance") setGlancing(false);
+            if (event.animationName === "mascot-wake") setWaking(false);
           }}
         >
           {happy ? (
@@ -146,6 +156,7 @@ export function CompanionMascot(props: {
               </g>
             </>
           )}
+        </g>
         </g>
         {sad ? <path d="M47 34c1.6 2.4 2.4 3.6 2.4 4.8a2.4 2.4 0 0 1-4.8 0c0-1.2.8-2.4 2.4-4.8Z" fill="#9fd4ff" /> : null}
         {wide ? <circle cx="54" cy="10" r="3.6" fill="#f5b544" stroke="#100c30" strokeWidth="1.2" /> : null}

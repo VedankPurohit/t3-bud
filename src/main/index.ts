@@ -18,9 +18,13 @@ if (process.env.T3_COMPANION_DEBUG_PORT) {
 
 let window: BrowserWindow | null = null;
 let quitting = false;
+/** The cursor relative to the window, as last sent; cleared to force a fresh send. */
+let lastCursor: Point | null = null;
 
 /** The quiet capsule; the renderer resizes the window to whatever it shows. */
 const INITIAL_SIZE = { width: 160, height: 48 };
+/** How often the mascot's eyes check where the cursor is; updates go out only when it moved. */
+const CURSOR_POLL_MS = 33;
 
 const store = new CompanionStore(
   (state) => window?.webContents.send("companion:state", state),
@@ -91,7 +95,19 @@ function createWindow() {
     event.preventDefault();
     window?.webContents.send("companion:fold");
   });
+  // Electron has no global mouse-move event, so the mascot's gaze polls the cursor instead.
+  // Compared relative to the window, so moving or resizing the island re-aims the eyes too.
+  const cursorTimer = setInterval(() => {
+    if (!window?.isVisible()) return;
+    const point = screen.getCursorScreenPoint();
+    const bounds = window.getBounds();
+    const relative = { x: point.x - bounds.x, y: point.y - bounds.y };
+    if (lastCursor && relative.x === lastCursor.x && relative.y === lastCursor.y) return;
+    lastCursor = relative;
+    window.webContents.send("companion:cursor", relative);
+  }, CURSOR_POLL_MS);
   window.on("closed", () => {
+    clearInterval(cursorTimer);
     window = null;
   });
   // Re-center when displays or the Dock change the work area.
@@ -119,6 +135,9 @@ const fromCompanion = (event: Electron.IpcMainInvokeEvent) =>
   window !== null && event.sender === window.webContents;
 
 function registerIpc() {
+  ipcMain.on("companion:cursor-sync", (event) => {
+    if (window !== null && event.sender === window.webContents) lastCursor = null;
+  });
   const handle = <A extends unknown[], R>(
     channel: string,
     handler: (...args: A) => R | Promise<R>,
