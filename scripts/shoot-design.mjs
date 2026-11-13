@@ -9,7 +9,7 @@ import { parseArgs } from "node:util";
 
 const { values } = parseArgs({
   options: {
-    dist: { type: "string", default: "design-dist" },
+    dist: { type: "string", default: "docs/design" },
     variant: { type: "string" },
     out: { type: "string", default: "design-shots" },
     theme: { type: "string" },

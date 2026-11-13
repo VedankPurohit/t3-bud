@@ -12,7 +12,7 @@ export default defineConfig({
   // One self-contained HTML file, so the gallery opens straight from disk.
   plugins: [react(), tailwindcss(), viteSingleFile()],
   build: {
-    outDir: resolve(process.env.DESIGN_OUT ?? "design-dist"),
+    outDir: resolve(process.env.DESIGN_OUT ?? "docs/design"),
     emptyOutDir: true,
     rollupOptions: { input: resolve("src/renderer/design.html") },
   },

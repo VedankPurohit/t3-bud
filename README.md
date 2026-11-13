@@ -19,6 +19,19 @@ the interface T3 Code documents for outside agents, so it needs no changes to T3
 - **What it cannot do.** MCP cannot approve permission requests. Threads waiting on an approval
   show a banner that opens the thread in T3 Code.
 
+## Design
+
+The companion's look is the **Island** direction: a capsule you can drag anywhere, which opens
+into a popover built from T3 Code's own sidebar, chat, and composer components.
+
+[`docs/design/design.html`](docs/design/design.html) is a self-contained gallery of all six
+directions that were explored (Sidebar twin, Split view, Edge drawer, Island, Command bar,
+Notification stack), each screen at real size in light and dark. Open it from disk in any browser.
+Its sources are in `src/renderer/src/design/`; `pnpm design:build` regenerates it.
+
+T3 Code's stylesheet and UI primitives are copied into `src/renderer/src/t3/` (MIT); see
+`THIRD_PARTY_NOTICES.md`.
+
 ## Develop
 
 ```sh

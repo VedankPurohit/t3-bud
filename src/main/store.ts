@@ -56,6 +56,7 @@ export class CompanionStore {
   private previouslyWorking: Set<string> | null = null;
   private projects: ProjectSummary[] = [];
   private providers: Provider[] = [];
+  private syncedAt: string | null = null;
   private lastShelvesAt = 0;
   private lastCatalogAt = 0;
   private timer: ReturnType<typeof setTimeout> | null = null;
@@ -85,6 +86,7 @@ export class CompanionStore {
       inboxTotal: this.recentTotal,
       projects: this.projects,
       providers: this.providers,
+      syncedAt: this.syncedAt,
     };
   }
 
@@ -160,6 +162,7 @@ export class CompanionStore {
     if (!client) return;
     try {
       await this.refresh(client);
+      this.syncedAt = new Date().toISOString();
       if (this.connection.state !== "connected" && this.client === client) {
         this.connection = { state: "connected", serverUrl: this.serverUrl() };
       }

@@ -3,13 +3,7 @@ import { join } from "node:path";
 
 import type { ModelSelection, OrganizeAction } from "../shared/types";
 import { config } from "./config";
-import {
-  COMPANION_COMPACT_SIZE,
-  COMPANION_EXPANDED_SIZE,
-  compactBoundsAt,
-  defaultCompactBounds,
-  resizeFromNearestCorner,
-} from "./geometry";
+import { anchorOf, defaultAnchor, islandBounds, type Point } from "./island";
 import { probeServer, signIn } from "./oauth";
 import { CompanionStore } from "./store";
 
@@ -23,12 +17,18 @@ if (process.env.T3_COMPANION_DEBUG_PORT) {
 }
 
 let window: BrowserWindow | null = null;
-let expanded = false;
+let quitting = false;
+
+/** The quiet capsule; the renderer resizes the window to whatever it shows. */
+const INITIAL_SIZE = { width: 160, height: 48 };
 
 const store = new CompanionStore(
   (state) => window?.webContents.send("companion:state", state),
   (detail) => window?.webContents.send("companion:thread-detail", detail),
 );
+
+const contains = (area: Electron.Rectangle, point: Point) =>
+  point.x >= area.x && point.x <= area.x + area.width && point.y >= area.y && point.y <= area.y + area.height;
 
 async function detectLocalServer(): Promise<string | null> {
   for (const candidate of LOCAL_CANDIDATES) {
@@ -37,13 +37,19 @@ async function detectLocalServer(): Promise<string | null> {
   return null;
 }
 
-const workAreaFor = (rect: Electron.Rectangle) => screen.getDisplayMatching(rect).workArea;
+/** The capsule's top-center point; the island hangs from it at every size. */
+// Read once the app is ready: the screen API is unavailable before that.
+let anchor: Point = { x: 0, y: 0 };
+const workAreaAt = (point: Point) => screen.getDisplayNearestPoint(point).workArea;
+
+/** Places the window at `size`, hung from the anchor and kept on its display. */
+function place(size: { width: number; height: number }) {
+  window?.setBounds(islandBounds(workAreaAt(anchor), anchor, size));
+}
 
 function createWindow() {
-  const saved = config.position();
-  const bounds = saved
-    ? compactBoundsAt(saved, workAreaFor({ ...saved, ...COMPANION_COMPACT_SIZE }))
-    : defaultCompactBounds(screen.getPrimaryDisplay().workArea);
+  anchor = config.anchor() ?? defaultAnchor(screen.getPrimaryDisplay().workArea);
+  const bounds = islandBounds(workAreaAt(anchor), anchor, INITIAL_SIZE);
   window = new BrowserWindow({
     ...bounds,
     show: false,
@@ -79,26 +85,34 @@ function createWindow() {
     if (url !== window?.webContents.getURL()) event.preventDefault();
   });
   window.once("ready-to-show", () => window?.showInactive());
+  // Cmd+W and window-close shortcuts fold the island instead of closing it; only Quit ends the app.
+  window.on("close", (event) => {
+    if (quitting) return;
+    event.preventDefault();
+    window?.webContents.send("companion:fold");
+  });
   window.on("closed", () => {
     window = null;
+  });
+  // Re-center when displays or the Dock change the work area.
+  screen.on("display-metrics-changed", () => {
+    if (!window) return;
+    if (!screen.getAllDisplays().some((display) => contains(display.workArea, anchor))) {
+      anchor = defaultAnchor(screen.getPrimaryDisplay().workArea);
+    }
+    const { width, height } = window.getBounds();
+    place({ width, height });
   });
   if (process.env.ELECTRON_RENDERER_URL) void window.loadURL(process.env.ELECTRON_RENDERER_URL);
   else void window.loadFile(join(import.meta.dirname, "../renderer/index.html"));
 }
 
-function setExpanded(next: boolean) {
-  if (!window || expanded === next) return;
-  const from = window.getBounds();
-  const bounds = resizeFromNearestCorner(
-    from,
-    next ? COMPANION_EXPANDED_SIZE : COMPANION_COMPACT_SIZE,
-    workAreaFor(from),
-  );
-  expanded = next;
-  window.setBounds(bounds);
-  store.setForeground(next);
-  if (next) window.focus();
-  else config.savePosition({ x: bounds.x, y: bounds.y });
+/** Sizes the window to what the island shows, so nothing invisible blocks clicks underneath. */
+function resize(size: { width: number; height: number; focus: boolean }) {
+  if (!window) return;
+  place(size);
+  store.setForeground(size.focus);
+  if (size.focus) window.focus();
 }
 
 const fromCompanion = (event: Electron.IpcMainInvokeEvent) =>
@@ -129,15 +143,21 @@ function registerIpc() {
     }
   });
   handle("companion:sign-out", async () => store.signOut(await detectLocalServer()));
-  handle("companion:set-expanded", (next: boolean) => setExpanded(next));
+  handle("companion:resize", (size: { width: number; height: number; focus: boolean }) => resize(size));
   handle("companion:move", (position: { x: number; y: number; settled: boolean }) => {
-    if (!window || expanded) return;
-    const point = { x: Math.round(position.x), y: Math.round(position.y) };
-    const bounds = position.settled
-      ? compactBoundsAt(point, workAreaFor({ ...point, ...COMPANION_COMPACT_SIZE }))
-      : { ...point, ...COMPANION_COMPACT_SIZE };
-    window.setBounds(bounds);
-    if (position.settled) config.savePosition({ x: bounds.x, y: bounds.y });
+    if (!window) return;
+    const { width, height } = window.getBounds();
+    const next = { x: Math.round(position.x), y: Math.round(position.y), width, height };
+    anchor = anchorOf(next);
+    if (!position.settled) {
+      window.setBounds(next);
+      return;
+    }
+    // A drop near an edge settles fully on screen; that settled spot becomes the anchor.
+    const settled = islandBounds(workAreaAt(anchor), anchor, { width, height });
+    window.setBounds(settled);
+    anchor = anchorOf(settled);
+    config.saveAnchor(anchor);
   });
   handle("companion:open-thread", (threadId: string | null) => store.openThread(threadId));
   handle("companion:send", (threadId: string, message: string) => store.send(threadId, message));
@@ -182,6 +202,9 @@ if (!app.requestSingleInstanceLock()) {
     registerIpc();
     createWindow();
     store.start(config.auth() ? null : await detectLocalServer());
+  });
+  app.on("before-quit", () => {
+    quitting = true;
   });
   app.on("window-all-closed", () => app.quit());
 }

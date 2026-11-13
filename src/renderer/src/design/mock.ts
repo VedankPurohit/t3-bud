@@ -154,6 +154,7 @@ export const mockState: CompanionState = {
   inboxTotal: 1051,
   projects: mockProjects,
   providers: mockProviders,
+  syncedAt: minutesAgo(0),
 };
 
 export const mockEmptyState: CompanionState = {

@@ -13,9 +13,10 @@ interface ConfigFile {
   /** The MCP bearer token, encrypted with the OS keychain via safeStorage. */
   sealedToken?: string;
   tokenExpiresAt?: string;
-  position?: { x: number; y: number };
   /** Threads that finished while the companion watched and were not opened yet. */
   fresh?: string[];
+  /** Where the user dragged the island: the capsule's top-center, in screen points. */
+  anchor?: { x: number; y: number };
 }
 
 const configPath = () => join(app.getPath("userData"), "config.json");
@@ -60,9 +61,12 @@ export const config = {
   clearAuth() {
     write(({ sealedToken: _token, tokenExpiresAt: _expires, ...file }) => file);
   },
-  position: () => read().position ?? null,
-  savePosition(position: { x: number; y: number }) {
-    write((file) => ({ ...file, position }));
+  anchor: () => {
+    const anchor = read().anchor;
+    return anchor && Number.isFinite(anchor.x) && Number.isFinite(anchor.y) ? anchor : null;
+  },
+  saveAnchor(anchor: { x: number; y: number }) {
+    write((file) => ({ ...file, anchor }));
   },
   fresh: () => new Set(read().fresh ?? []),
   saveFresh(fresh: ReadonlySet<string>) {

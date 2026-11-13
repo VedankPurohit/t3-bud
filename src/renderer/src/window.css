@@ -20,3 +20,9 @@ html #root {
   user-select: text;
 }
 
+
+/* T3 Code's primitives size up below its `sm` breakpoint (640px) for touch. The island is a small
+   desktop window, so it always takes the desktop sizes. */
+@theme {
+  --breakpoint-sm: 0rem;
+}

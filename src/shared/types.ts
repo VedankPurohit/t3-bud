@@ -88,6 +88,8 @@ export interface CompanionState {
   readonly inboxTotal: number;
   readonly projects: readonly ProjectSummary[];
   readonly providers: readonly Provider[];
+  /** When the last poll succeeded; MCP has no push, so the UI shows how fresh this is. */
+  readonly syncedAt: string | null;
 }
 
 export interface ThreadItem {
@@ -124,8 +126,12 @@ export interface CompanionApi {
   onState(listener: (state: CompanionState) => void): () => void;
   connect(serverUrl: string): Promise<ActionResult>;
   signOut(): Promise<void>;
-  setExpanded(expanded: boolean): Promise<void>;
+  /** Sizes the window to what the island shows; `focus` when it takes keyboard input. */
+  resize(size: { width: number; height: number; focus: boolean }): Promise<void>;
+  /** Moves the window while the capsule is dragged; `settled` ends the drag and saves the spot. */
   move(position: { x: number; y: number; settled: boolean }): Promise<void>;
+  /** The window was asked to close (Cmd+W); the island folds instead. */
+  onFoldRequest(listener: () => void): () => void;
   openThread(threadId: string | null): Promise<void>;
   onThreadDetail(listener: (detail: ThreadDetail) => void): () => void;
   send(threadId: string, message: string): Promise<ActionResult>;

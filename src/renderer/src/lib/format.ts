@@ -1,5 +1,3 @@
-import type { Provider, ThreadSummary } from "@shared/types";
-
 export function relativeTime(iso: string, now = Date.now()): string {
   const seconds = Math.max(0, Math.round((now - Date.parse(iso)) / 1000));
   if (seconds < 45) return "now";
@@ -20,10 +18,6 @@ export function untilLabel(iso: string, now = Date.now()): string {
   return hours < 24 ? `in ${hours}h` : `in ${Math.round(hours / 24)}d`;
 }
 
-export function providerName(providers: readonly Provider[], instanceId: string | null): string {
-  return providers.find((p) => p.providerInstanceId === instanceId)?.displayName ?? instanceId ?? "";
-}
-
 /** "gpt-6-luna" reads better as "GPT-6 Luna"; T3 Code shows the same names. */
 export function modelLabel(model: string | null): string {
   if (!model) return "Default model";
@@ -35,12 +29,3 @@ export function modelLabel(model: string | null): string {
     .replace(/(\d) (\d)/g, "$1.$2");
 }
 
-export type RowTone = "attention" | "failed" | "done" | "working" | "waiting" | "quiet";
-
-export function rowTone(thread: ThreadSummary, working: boolean): RowTone {
-  if (thread.pendingRequestCount > 0) return "attention";
-  if (thread.status === "failed") return "failed";
-  if (working) return thread.status === "waiting" ? "waiting" : "working";
-  if (thread.fresh) return "done";
-  return "quiet";
-}
