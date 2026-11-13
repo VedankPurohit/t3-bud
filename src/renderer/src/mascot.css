@@ -1,36 +1,5 @@
 /* The blob mascot and the panel's one-shot entrance animations. */
 /* Every animation runs once per event, so the always-visible window idles at zero frames. */
-.mascot-shadow {
-  fill: rgb(0 0 0 / 0.22);
-}
-.mascot-stop-top {
-  stop-color: #ffb3d9;
-}
-.mascot-stop-mid {
-  stop-color: #f07bc0;
-}
-.mascot-stop-bottom {
-  stop-color: #b25ae3;
-}
-.mascot-shine {
-  fill: rgb(255 255 255 / 0.38);
-}
-.mascot-cheek {
-  fill: rgb(255 95 162 / 0.45);
-}
-.mascot-ink {
-  fill: #2b1236;
-}
-.mascot-stroke {
-  fill: none;
-  stroke: #2b1236;
-}
-.mascot-glint {
-  fill: #fff;
-}
-.mascot-tear {
-  fill: #7cc7ff;
-}
 .mascot-body,
 .mascot-bob,
 .mascot-eyes {
@@ -38,7 +7,10 @@
   transform-origin: 32px 56px;
 }
 .mascot-eyes {
-  transform-origin: 32px 33px;
+  transform-origin: 40px 22px;
+}
+.mascot-glance {
+  animation: mascot-glance 1100ms ease-in-out 1;
 }
 .mascot-hop {
   animation: mascot-hop 720ms cubic-bezier(0.3, 0.7, 0.4, 1) 1;
@@ -75,6 +47,12 @@
     transform: scale(1.03, 0.97);
   }
 }
+@keyframes mascot-glance {
+  30%,
+  60% {
+    transform: translateX(-4px) translateY(1px);
+  }
+}
 @keyframes mascot-blink {
   50% {
     transform: scaleY(0.1);
@@ -97,6 +75,7 @@
   .mascot-hop,
   .mascot-bob,
   .mascot-blink,
+  .mascot-glance,
   .panel-in,
   .pop-in {
     animation: none;

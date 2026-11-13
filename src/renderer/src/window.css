@@ -26,3 +26,17 @@ html #root {
 @theme {
   --breakpoint-sm: 0rem;
 }
+
+/* T3 Tots' violet (github.com/Deepusleepy/t3-tots) over T3 Code's accent tokens. */
+:root,
+:root.dark,
+:root .dark {
+  --primary: oklch(0.6 0.22 292);
+  --primary-foreground: #fff;
+  --message-action: oklch(0.58 0.23 292);
+  --message-action-foreground: #fff;
+  --message-action-hover: oklch(0.64 0.21 292);
+  --ring: oklch(0.62 0.2 292);
+  --info: oklch(0.66 0.19 292);
+  --info-foreground: oklch(0.76 0.14 292);
+}
