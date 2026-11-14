@@ -10,6 +10,7 @@ type Exit = { _tag: "Success"; value?: unknown } | { _tag: "Failure"; cause: Cau
 interface Pending {
   onChunk?: (values: unknown[]) => void;
   onExit: (exit: Exit) => void;
+  timer?: ReturnType<typeof setTimeout>;
 }
 
 export class RpcError extends Error {
@@ -60,16 +61,22 @@ export class RpcSocket {
   static open(url: string, onClose: (code: number, reason: string) => void): Promise<RpcSocket> {
     return new Promise((resolve, reject) => {
       const ws = new WebSocket(url);
-      const fail = () => reject(new Error("Could not open a connection to T3 Code."));
+      const cleanup = () => {
+        clearTimeout(timer);
+        ws.removeEventListener("error", fail);
+        ws.removeEventListener("close", fail);
+        ws.removeEventListener("open", opened);
+      };
+      const fail = () => {
+        cleanup();
+        ws.close();
+        reject(new Error("Could not open a connection to T3 Code."));
+      };
+      const opened = () => { cleanup(); resolve(new RpcSocket(ws, onClose)); };
+      const timer = setTimeout(fail, 10_000);
       ws.addEventListener("error", fail, { once: true });
-      ws.addEventListener(
-        "open",
-        () => {
-          ws.removeEventListener("error", fail);
-          resolve(new RpcSocket(ws, onClose));
-        },
-        { once: true },
-      );
+      ws.addEventListener("close", fail, { once: true });
+      ws.addEventListener("open", opened, { once: true });
     });
   }
 
@@ -78,8 +85,9 @@ export class RpcSocket {
     this.closed = true;
     clearInterval(this.heartbeat);
     const exit: Exit = { _tag: "Failure", cause: [{ _tag: "Die", defect: `Connection closed (${code}).` }] };
-    for (const pending of this.pending.values()) pending.onExit(exit);
+    const pending = [...this.pending.values()];
     this.pending.clear();
+    for (const item of pending) { clearTimeout(item.timer); item.onExit(exit); }
     this.onClose(code, reason);
   }
 
@@ -107,11 +115,12 @@ export class RpcSocket {
     } else if (message._tag === "Exit") {
       const pending = this.pending.get(requestId);
       this.pending.delete(requestId);
+      clearTimeout(pending?.timer);
       pending?.onExit(message.exit as Exit);
     }
   }
 
-  call<T>(tag: string, payload: unknown): Promise<T> {
+  call<T>(tag: string, payload: unknown, timeoutMs = 30_000): Promise<T> {
     const id = String(this.nextId++);
     return new Promise((resolve, reject) => {
       if (this.closed) {
@@ -119,6 +128,11 @@ export class RpcSocket {
         return;
       }
       this.pending.set(id, {
+        timer: setTimeout(() => {
+          if (!this.pending.delete(id)) return;
+          this.send({ _tag: "Interrupt", requestId: id });
+          reject(new Error(`${tag} timed out. Check T3 Code before retrying the action.`));
+        }, timeoutMs),
         onExit: (exit) =>
           exit._tag === "Success" ? resolve(exit.value as T) : reject(new RpcError(tag, exit.cause)),
       });
@@ -129,7 +143,7 @@ export class RpcSocket {
   /** Opens a stream; `onEnd` runs when it ends for any reason. Returns a cancel function. */
   stream(tag: string, payload: unknown, onValue: (value: unknown) => void, onEnd: (exit: Exit) => void) {
     const id = String(this.nextId++);
-    this.pending.set(id, { onChunk: (values) => values.forEach(onValue), onExit: onEnd });
+    this.pending.set(id, { onChunk: (values) => values.forEach((value) => onValue(value)), onExit: onEnd });
     this.send({ _tag: "Request", id, tag, payload, headers: [] });
     return () => {
       if (!this.pending.delete(id)) return;
