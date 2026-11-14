@@ -1,3 +1,5 @@
+import type { ProjectIcon } from "../../shared/types";
+
 /** The thread list, kept live from `orchestration.subscribeShell`. Mirrors T3 Code's shellReducer. */
 
 export interface RawProject {
@@ -6,6 +8,8 @@ export interface RawProject {
   readonly workspaceRoot: string;
   readonly archivedAt?: string | null;
   readonly defaultModelSelection?: RawModelSelection | null;
+  readonly faviconPath?: string | null;
+  readonly projectIcon?: ProjectIcon | null;
 }
 
 export interface RawModelSelection {
@@ -47,7 +51,12 @@ export interface ShellState {
   readonly synchronized: boolean;
 }
 
-export const emptyShell: ShellState = { sequence: -1, projects: new Map(), threads: new Map(), synchronized: false };
+export const emptyShell: ShellState = {
+  sequence: -1,
+  projects: new Map(),
+  threads: new Map(),
+  synchronized: false,
+};
 
 type ShellItem =
   | {
@@ -59,7 +68,12 @@ type ShellItem =
   | { kind: "snapshot-required" }
   | { kind: "project.updated"; sequence: number; project: RawProject }
   | { kind: "project.removed"; sequence: number; projectId: string }
-  | { kind: "thread.updated"; sequence: number; location: "active" | "archive"; thread: RawThreadShell }
+  | {
+      kind: "thread.updated";
+      sequence: number;
+      location: "active" | "archive";
+      thread: RawThreadShell;
+    }
   | { kind: "thread.removed"; sequence: number; threadId: string }
   | { kind: string; sequence?: number };
 
@@ -77,7 +91,8 @@ export function applyShellItem(state: ShellState, value: unknown): ShellState {
     };
   }
   if (item.kind === "synchronized") return { ...state, synchronized: true };
-  if (!("sequence" in item) || typeof item.sequence !== "number" || item.sequence <= state.sequence) return state;
+  if (!("sequence" in item) || typeof item.sequence !== "number" || item.sequence <= state.sequence)
+    return state;
   const next = { ...state, sequence: item.sequence };
   switch (item.kind) {
     case "project.updated": {
@@ -124,9 +139,12 @@ export function isListed(thread: RawThreadShell) {
 
 /** T3 Code's unread rule: a run finished after the last visit, or a failure never seen. */
 export function isUnread(thread: RawThreadShell) {
-  const completed = thread.latestRunCompletedAt ? Date.parse(thread.latestRunCompletedAt) : Number.NaN;
+  const completed = thread.latestRunCompletedAt
+    ? Date.parse(thread.latestRunCompletedAt)
+    : Number.NaN;
   if (Number.isNaN(completed)) return false;
-  if (thread.status === "failed") return !thread.lastVisitedAt || completed > Date.parse(thread.lastVisitedAt);
+  if (thread.status === "failed")
+    return !thread.lastVisitedAt || completed > Date.parse(thread.lastVisitedAt);
   return !!thread.lastVisitedAt && completed > Date.parse(thread.lastVisitedAt);
 }
 

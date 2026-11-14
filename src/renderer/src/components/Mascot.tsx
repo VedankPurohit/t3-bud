@@ -5,8 +5,9 @@ import { cn } from "../t3/lib/utils";
 
 export type CompanionMood = "idle" | "working" | "done" | "attention" | "failed";
 
-const BLINK_MIN_MS = 3_200;
-const BLINK_SPREAD_MS = 3_800;
+const BLINK_MIN_MS = 4_200;
+const BLINK_SPREAD_MS = 3_200;
+const SMILE_MS = 850;
 /**
  * The night-sky orb from T3 Tots (github.com/Deepusleepy/t3-tots, MIT), redrawn as SVG so its eyes
  * can blink and react. It animates only on events (waking up, a blink, a hop on news, the cursor
@@ -21,26 +22,41 @@ export function CompanionMascot(props: {
 }) {
   const { mood, size } = props;
   const id = useId();
-  const [blinking, setBlinking] = useState(false);
+  const [blink, setBlink] = useState<"still" | "closing" | "opening">("still");
+  const [smiling, setSmiling] = useState(false);
   const [waking, setWaking] = useState(true);
   const svgRef = useRef<SVGSVGElement>(null);
   const gazeRef = useRef<SVGGElement>(null);
 
-  // Schedules idle blinks on a wall-clock timer.
+  // Expression changes share the blink timer and pause when hidden or Reduce Motion is enabled.
   useEffect(() => {
-    let timer: ReturnType<typeof setTimeout>;
+    const motion = matchMedia("(prefers-reduced-motion: reduce)");
+    let timer: ReturnType<typeof setTimeout> | undefined;
     const schedule = () => {
+      if (document.hidden || motion.matches) return;
       timer = setTimeout(
         () => {
-          if (!document.hidden) setBlinking(true);
+          setBlink("closing");
           schedule();
         },
-        BLINK_MIN_MS + Math.random() * BLINK_SPREAD_MS,
+        smiling ? SMILE_MS : BLINK_MIN_MS + Math.random() * BLINK_SPREAD_MS,
       );
     };
-    schedule();
-    return () => clearTimeout(timer);
-  }, []);
+    const refresh = () => {
+      clearTimeout(timer);
+      if (document.hidden || motion.matches) setBlink("still");
+      if (motion.matches) setWaking(false);
+      schedule();
+    };
+    refresh();
+    motion.addEventListener("change", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      clearTimeout(timer);
+      motion.removeEventListener("change", refresh);
+      document.removeEventListener("visibilitychange", refresh);
+    };
+  }, [smiling]);
 
   // Eyes follow the cursor anywhere on screen. The transform is written directly, so gaze never
   // re-renders React; the design gallery has no companion bridge and keeps still eyes.
@@ -52,16 +68,16 @@ export function CompanionMascot(props: {
       const gaze = gazeRef.current;
       if (!svg || !gaze) return;
       const offset = gazeOffset(svg.getBoundingClientRect(), cursor);
-      const next = `translate(${offset.x}px, ${offset.y}px)`;
+      const next = `translate(${offset.x}px, ${offset.y}px) rotate(${offset.rotation}deg) scale(${offset.scaleX}, ${offset.scaleY})`;
       if (next === last) return;
       last = next;
       gaze.style.transform = next;
     });
-  }, []);
+  }, [props.hopKey]);
 
-  const happy = mood === "done";
   const wide = mood === "attention";
   const sad = mood === "failed";
+  const happy = smiling && (mood === "done" || mood === "idle");
   return (
     <svg
       ref={svgRef}
@@ -70,6 +86,7 @@ export function CompanionMascot(props: {
       aria-hidden
       className={cn("overflow-visible", props.className)}
       data-mood={mood}
+      data-eyes={happy ? "smile" : "open"}
     >
       <defs>
         <radialGradient id={`${id}-sky`} cx="0.42" cy="0.28" r="0.85">
@@ -97,7 +114,11 @@ export function CompanionMascot(props: {
         <g clipPath={`url(#${id}-clip)`}>
           <rect x="0" y="0" width="64" height="64" fill={`url(#${id}-sky)`} />
           {/* Stars, with the one four-point sparkle from the original. */}
-          <path d="M14 15.5l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8z" fill="#fff" opacity="0.95" />
+          <path
+            d="M14 15.5l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8z"
+            fill="#fff"
+            opacity="0.95"
+          />
           <circle cx="27" cy="9" r="0.7" fill="#fff" opacity="0.8" />
           <circle cx="41" cy="12" r="0.55" fill="#fff" opacity="0.7" />
           <circle cx="50" cy="20" r="0.6" fill="#fff" opacity="0.75" />
@@ -129,54 +150,87 @@ export function CompanionMascot(props: {
             <circle cx="30" cy="53" r="3" />
           </g>
         </g>
-        <circle cx="32" cy="32" r="30" fill="none" stroke="#2c2475" strokeWidth="1.2" opacity="0.8" />
-        {/* The eyes: two slanted, glowing pills; happy arcs when a thread is done. */}
+        <circle
+          cx="32"
+          cy="32"
+          r="30"
+          fill="none"
+          stroke="#2c2475"
+          strokeWidth="1.2"
+          opacity="0.8"
+        />
+        {/* Swap eye shapes only while the eyelids are closed. */}
         <g ref={gazeRef} className="mascot-gaze">
-        <g
-          className={cn("mascot-eyes", waking ? "mascot-wake" : blinking && "mascot-blink")}
-          onAnimationEnd={(event) => {
-            if (event.animationName === "mascot-blink") setBlinking(false);
-            if (event.animationName === "mascot-wake") setWaking(false);
-          }}
-        >
-          {happy ? (
-            <g fill="none" stroke="#f3eeff" strokeWidth="3.2" strokeLinecap="round">
-              <path d="M30 27q5-7 10 0" />
-              <path d="M45.5 22q5-7 10 0" />
-            </g>
-          ) : (
-            <>
-              <g filter={`url(#${id}-glow)`} opacity="0.75" fill="#d9c8ff">
-                <Eye x={35} y={sad ? 28 : 25} wide={wide} sad={sad} />
-                <Eye x={50.5} y={sad ? 23 : 20} wide={wide} sad={sad} />
+          <g
+            className={cn(
+              "mascot-eyes",
+              waking
+                ? "mascot-wake"
+                : blink === "closing"
+                  ? "mascot-close"
+                  : blink === "opening" && "mascot-open",
+            )}
+            onAnimationEnd={(event) => {
+              if (event.animationName === "mascot-close") {
+                setSmiling((current) => !current);
+                setBlink("opening");
+              }
+              if (event.animationName === "mascot-open") setBlink("still");
+              if (event.animationName === "mascot-wake") setWaking(false);
+            }}
+          >
+            {happy ? (
+              <g fill="none" stroke="#f3eeff" strokeWidth="3.2" strokeLinecap="round">
+                <path d="M20 26q5-7 10 0" />
+                <path d="M34 26q5-7 10 0" />
               </g>
-              <g fill="#f6f2ff">
-                <Eye x={35} y={sad ? 28 : 25} wide={wide} sad={sad} />
-                <Eye x={50.5} y={sad ? 23 : 20} wide={wide} sad={sad} />
-              </g>
-            </>
-          )}
+            ) : (
+              <>
+                <g filter={`url(#${id}-glow)`} opacity="0.75" fill="#d9c8ff">
+                  <Eye x={25} mood={mood} side="left" />
+                  <Eye x={39} mood={mood} side="right" />
+                </g>
+                <g fill="#f6f2ff">
+                  <Eye x={25} mood={mood} side="left" />
+                  <Eye x={39} mood={mood} side="right" />
+                </g>
+              </>
+            )}
+          </g>
+          {sad ? (
+            <path
+              d="M22 33c1.4 2.2 2.1 3.2 2.1 4.2a2.1 2.1 0 0 1-4.2 0c0-1 .7-2 2.1-4.2Z"
+              fill="#9fd4ff"
+            />
+          ) : null}
         </g>
-        </g>
-        {sad ? <path d="M47 34c1.6 2.4 2.4 3.6 2.4 4.8a2.4 2.4 0 0 1-4.8 0c0-1.2.8-2.4 2.4-4.8Z" fill="#9fd4ff" /> : null}
-        {wide ? <circle cx="54" cy="10" r="3.6" fill="#f5b544" stroke="#100c30" strokeWidth="1.2" /> : null}
+        {wide ? (
+          <circle cx="54" cy="10" r="3.6" fill="#f5b544" stroke="#100c30" strokeWidth="1.2" />
+        ) : null}
       </g>
     </svg>
   );
 }
 
-/** One slanted pill eye, centered on (x, y). */
-function Eye(props: { x: number; y: number; wide: boolean; sad: boolean }) {
-  const width = props.wide ? 8 : 7;
-  const height = props.sad ? 10 : props.wide ? 17.5 : 16;
+function Eye(props: { x: number; mood: CompanionMood; side: "left" | "right" }) {
+  const width = props.mood === "attention" ? 8 : 7;
+  const height =
+    props.mood === "failed"
+      ? 10
+      : props.mood === "attention"
+        ? 17.5
+        : 16;
+  const tilt = props.mood === "failed" ? 16 : props.mood === "working" ? -8 : 0;
+  const angle = props.side === "left" ? tilt : -tilt;
+  const y = props.mood === "failed" ? 26 : 24;
   return (
     <rect
       x={props.x - width / 2}
-      y={props.y - height / 2}
+      y={y - height / 2}
       width={width}
       height={height}
       rx={width / 2}
-      transform={`rotate(-33 ${props.x} ${props.y})`}
+      transform={`rotate(${angle} ${props.x} ${y})`}
     />
   );
 }

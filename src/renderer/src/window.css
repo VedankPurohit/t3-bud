@@ -20,23 +20,104 @@ html #root {
   user-select: text;
 }
 
-
 /* T3 Code's primitives size up below its `sm` breakpoint (640px) for touch. The island is a small
    desktop window, so it always takes the desktop sizes. */
 @theme {
   --breakpoint-sm: 0rem;
 }
 
-/* T3 Tots' violet (github.com/Deepusleepy/t3-tots) over T3 Code's accent tokens. */
-:root,
-:root.dark,
-:root .dark {
-  --primary: oklch(0.6 0.22 292);
-  --primary-foreground: #fff;
-  --message-action: oklch(0.58 0.23 292);
-  --message-action-foreground: #fff;
-  --message-action-hover: oklch(0.64 0.21 292);
-  --ring: oklch(0.62 0.2 292);
-  --info: oklch(0.66 0.19 292);
-  --info-foreground: oklch(0.76 0.14 292);
+.companion-dock {
+  position: absolute;
+  top: 0;
+  left: var(--companion-anchor-x, 50%);
+  width: 300px;
+  height: 176px;
+  transform: translateX(-50%);
+  pointer-events: none;
+  z-index: 30;
+}
+.companion-orb {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  width: 76px;
+  height: 60px;
+  display: flex;
+  justify-content: center;
+  transform: translateX(-50%);
+  cursor: grab;
+  touch-action: none;
+  pointer-events: auto;
+  outline: none;
+  border-radius: 50%;
+}
+.companion-orb:active {
+  cursor: grabbing;
+}
+.companion-orb:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+.companion-hover-bridge {
+  position: absolute;
+  top: 60px;
+  left: 50%;
+  width: 76px;
+  height: 8px;
+  transform: translateX(-50%);
+  pointer-events: auto;
+}
+.companion-controls {
+  position: absolute;
+  top: 68px;
+  left: 0;
+  display: flex;
+  align-items: center;
+  width: 300px;
+  height: 108px;
+  padding: 0;
+  border: 0;
+  border-radius: 16px;
+  background: transparent;
+  color: var(--foreground);
+  box-shadow: none;
+  opacity: 0;
+  transform: translateY(-5px) scale(0.985);
+  transform-origin: 50% 0;
+  pointer-events: none;
+  transition:
+    opacity 220ms cubic-bezier(0.22, 0.61, 0.36, 1),
+    transform 220ms cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+.companion-controls[data-visible="true"] {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+  pointer-events: auto;
+  transition-duration: 280ms;
+  transition-delay: 25ms;
+}
+@media (prefers-reduced-motion: reduce) {
+  .companion-controls {
+    transform: none;
+    transition: opacity 80ms linear;
+  }
+  .companion-controls[data-visible="true"] {
+    transition-duration: 80ms;
+    transition-delay: 0ms;
+  }
+}
+.quick-thread [data-slot="composer-shell"]::before {
+  background: transparent;
+}
+.quick-thread [data-slot="composer-host"] {
+  box-shadow: none;
+}
+.quick-thread [data-slot="composer-host"]::after {
+  display: none;
+}
+.quick-thread [data-slot="composer-host"] textarea {
+  min-height: 24px;
+}
+.quick-thread [data-slot="composer-host"] > div > div:first-child {
+  padding-top: 4px;
 }

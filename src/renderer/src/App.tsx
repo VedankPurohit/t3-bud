@@ -1,67 +1,167 @@
-import { useEffect, useEffectEvent, useRef, useState } from "react";
+import type { ThreadSearchInput, CompanionWindowLayout } from "@shared/types";
+import {
+  useEffect,
+  useEffectEvent,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+} from "react";
 
-import { AnnounceCapsule, ANNOUNCE_SIZE, CAPSULE_HEIGHT, capsuleWidth, IslandCapsule } from "./island/capsule";
+import { controlsSize, FOLDED_SIZE, IslandCapsule } from "./island/capsule";
+import { selectHoverThreads } from "./lib/activity";
+import { NotificationCard, NOTICE_WINDOW } from "./island/notification";
+import {
+  collectThreadNotices,
+  emptyNotificationTracker,
+  enqueueThreadNotices,
+  type ThreadNotice,
+} from "./lib/notifications";
 import { IslandContext, makeLookups } from "./island/context";
 import type { Shelf } from "./island/rows";
 import { ConnectScreen, InboxScreen, NewThreadScreen, ThreadScreen } from "./island/screens";
+import { escapeAction } from "./lib/escape";
 import { useMood } from "./lib/mood";
 import { useCompanionState } from "./lib/state";
 
-type Mode = { readonly kind: "folded" } | { readonly kind: "announce"; readonly threadId: string } | { readonly kind: "open" };
-type View = { readonly kind: "inbox" } | { readonly kind: "new" } | { readonly kind: "thread"; readonly threadId: string };
+type Mode =
+  | { readonly kind: "folded"; readonly revealed?: boolean }
+  | { readonly kind: "open" }
+  | { readonly kind: "quick"; readonly pickerOpen?: boolean };
+type View =
+  | { readonly kind: "inbox" }
+  | { readonly kind: "new" }
+  | { readonly kind: "thread"; readonly threadId: string };
 
 /** Room around the capsule for its shadow. */
 const SHADOW_MARGIN = { x: 16, y: 14 } as const;
-const POPOVER_SIZE = { width: 420, height: 560 } as const;
-const ANNOUNCE_MS = 6_000;
+const POPOVER_SIZE = { width: 390, height: 540 } as const;
+const NOTIFICATION_MS = 8_000;
 
 const api = () => window.companion;
 
 export function App() {
   const state = useCompanionState();
   const mood = useMood(state);
+  const [windowLayout, setWindowLayout] = useState<CompanionWindowLayout | null>(null);
   const [mode, setMode] = useState<Mode>({ kind: "folded" });
   const [view, setView] = useState<View>({ kind: "inbox" });
+  const [threadSearch, setThreadSearch] = useState<ThreadSearchInput>({
+    query: "",
+    projectIds: [],
+  });
   const [shelf, setShelf] = useState<Shelf>("inbox");
   const [toast, setToast] = useState<string | null>(null);
-  const announced = useRef<Set<string> | null>(null);
+  const [hoverSpace, setHoverSpace] = useState(false);
+  const [quickHeight, setQuickHeight] = useState(208);
+  const tracker = useRef(emptyNotificationTracker);
+  const [notices, setNotices] = useState<ThreadNotice[]>([]);
+  const [noticePaused, setNoticePaused] = useState(false);
+  const [closingNoticeId, setClosingNoticeId] = useState<string | null>(null);
+  const notice = notices[0];
+  const noticeVisible = Boolean(notice) && mode.kind === "folded";
+  const noticeClosing = notice?.id === closingNoticeId;
 
   const working = state?.working ?? [];
-  const foldedWidth = capsuleWidth(working.length, mood, state?.connection.state);
+  const controls = controlsSize(state ? selectHoverThreads(state).length : 0);
+  const revealed = mode.kind === "folded" && mode.revealed === true;
+  const size =
+    mode.kind === "open"
+      ? POPOVER_SIZE
+      : mode.kind === "quick"
+        ? {
+            width: mode.pickerOpen ? 420 : 380,
+            height: mode.pickerOpen ? Math.max(472, quickHeight + 240) : Math.max(208, quickHeight),
+          }
+        : noticeVisible
+          ? NOTICE_WINDOW
+          : hoverSpace
+            ? {
+                width: controls.width + SHADOW_MARGIN.x,
+                height: controls.height + SHADOW_MARGIN.y,
+              }
+            : {
+                width: FOLDED_SIZE.width + SHADOW_MARGIN.x,
+                height: FOLDED_SIZE.height + SHADOW_MARGIN.y,
+              };
+  const focus = mode.kind === "open" || mode.kind === "quick";
 
-  // The window always matches what the island shows, so nothing invisible blocks clicks below it.
-  useEffect(() => {
-    if (mode.kind === "open") return;
-    void api().resize(
-      mode.kind === "announce"
-        ? { width: ANNOUNCE_SIZE.width + SHADOW_MARGIN.x, height: ANNOUNCE_SIZE.height + SHADOW_MARGIN.y, focus: false }
-        : { width: foldedWidth + SHADOW_MARGIN.x, height: CAPSULE_HEIGHT + SHADOW_MARGIN.y, focus: false },
+  // Keep room for the pill until its exit transition finishes, then release the transparent area.
+  useLayoutEffect(() => {
+    let current = true;
+    void api()
+      .resize({ ...size, focus, notification: noticeVisible })
+      .then((layout) => {
+        if (current && layout) setWindowLayout(layout);
+      });
+    return () => {
+      current = false;
+    };
+  }, [size.width, size.height, focus, noticeVisible]);
+
+  // Native dragging and display changes can flip the thought bubble to the other side.
+  useEffect(() => api().onWindowLayout?.(setWindowLayout), []);
+  const mascotX =
+    windowLayout?.width === size.width
+      ? windowLayout.mascotX
+      : noticeVisible
+        ? size.width - 46
+        : size.width / 2;
+
+  const reveal = (next: boolean) => {
+    if (mode.kind !== "folded") return;
+    if (next) setHoverSpace(true);
+    setMode((current) =>
+      current.kind === "folded" && Boolean(current.revealed) !== next
+        ? { kind: "folded", revealed: next }
+        : current,
     );
-  }, [mode.kind, foldedWidth]);
+  };
 
-  // Announces a thread the moment it finishes; threads already done at launch stay quiet.
+  // Compare run completions, not unread state; a thread can finish repeatedly without a visit.
   useEffect(() => {
     if (!state) return;
-    const fresh = state.inbox.filter((thread) => thread.unread);
-    if (announced.current === null) {
-      announced.current = new Set(fresh.map((thread) => thread.threadId));
-      return;
+    if (
+      tracker.current.environmentId !== null &&
+      tracker.current.environmentId !== state.environmentId
+    ) {
+      setNotices([]);
+      setClosingNoticeId(null);
+      setNoticePaused(false);
     }
-    const known = announced.current;
-    const newest = fresh.find((thread) => !known.has(thread.threadId));
-    for (const thread of fresh) known.add(thread.threadId);
-    if (newest && mode.kind === "folded") setMode({ kind: "announce", threadId: newest.threadId });
-  }, [state, mode.kind]);
+    const next = collectThreadNotices(tracker.current, state);
+    tracker.current = next.tracker;
+    if (next.notices.length > 0)
+      setNotices((current) => enqueueThreadNotices(current, next.notices));
+  }, [state]);
 
-  // Folds the announcement back after a few seconds.
+  // Give each queued alert its own reading time, paused while hovered or while composing a thread.
   useEffect(() => {
-    if (mode.kind !== "announce") return;
-    const timer = setTimeout(() => setMode({ kind: "folded" }), ANNOUNCE_MS);
+    if (!notice || notice.kind === "preview" || !noticeVisible || noticePaused || noticeClosing)
+      return;
+    const timer = setTimeout(() => setClosingNoticeId(notice.id), NOTIFICATION_MS);
     return () => clearTimeout(timer);
-  }, [mode]);
+  }, [notice?.id, noticeVisible, noticePaused, noticeClosing]);
+
+  const dismissNotice = () => {
+    if (notice) setClosingNoticeId(notice.id);
+  };
+  const removeNotice = () => {
+    if (!notice) return;
+    setNotices((current) => current.filter((item) => item.id !== notice.id));
+    setNoticePaused(false);
+    setHoverSpace(mode.kind === "folded" && Boolean(mode.revealed));
+  };
 
   // Cmd+W reaches the main process as a close; it folds the island instead.
-  useEffect(() => api().onFoldRequest(() => setMode({ kind: "folded" })), []);
+  useEffect(
+    () =>
+      api().onFoldRequest(() => {
+        setHoverSpace(false);
+        setMode({ kind: "folded" });
+      }),
+    [],
+  );
 
   // Clears an error toast after a few seconds.
   useEffect(() => {
@@ -72,35 +172,45 @@ export function App() {
 
   const open = async (next?: View) => {
     if (next) setView(next);
-    await api().resize({ ...POPOVER_SIZE, focus: true });
     setMode({ kind: "open" });
   };
-  const fold = () => setMode({ kind: "folded" });
+  const fold = () => {
+    setHoverSpace(false);
+    setMode({ kind: "folded" });
+  };
 
   const foldOnEscape = useEffectEvent((event: KeyboardEvent) => {
-    if (event.key !== "Escape" || event.defaultPrevented || event.isComposing) return;
-    if (document.querySelector("[data-popup-open], [data-slot$='-popup'][data-open]")) return;
+    const action = escapeAction({
+      key: event.key,
+      defaultPrevented: event.defaultPrevented,
+      isComposing: event.isComposing,
+      popupOpen: Boolean(
+        document.querySelector("[data-popup-open], [data-slot$='-popup'][data-open]"),
+      ),
+      composerOpen: Boolean(document.querySelector("[data-companion-composer]")),
+      noticeVisible,
+    });
+    if (action === "ignore") return;
     event.preventDefault();
-    fold();
+    if (action === "dismiss-notice") dismissNotice();
+    else fold();
   });
-  // Escape folds the open island unless a menu or picker is open. Clicking other apps leaves it open.
+  // Dictation tools use Escape; only fold from views without a composer.
   useEffect(() => {
-    if (mode.kind !== "open") return;
+    if (mode.kind !== "open" && mode.kind !== "quick" && !noticeVisible) return;
     window.addEventListener("keydown", foldOnEscape);
     return () => window.removeEventListener("keydown", foldOnEscape);
-  }, [mode.kind]);
+  }, [mode.kind, noticeVisible]);
 
   if (!state) return null;
   const lookups = makeLookups(state);
   const connected = state.connection.state === "connected" || state.connection.state === "offline";
-  const announcing =
-    mode.kind === "announce"
-      ? [...state.inbox, ...state.working].find((thread) => thread.threadId === mode.threadId)
-      : undefined;
-
   return (
     <IslandContext value={lookups}>
-      <div className="relative size-full">
+      <div
+        className="relative size-full"
+        style={{ "--companion-anchor-x": `${mascotX}px` } as CSSProperties}
+      >
         {mode.kind === "open" ? (
           !connected ? (
             <ConnectScreen connection={state.connection} onMinimize={fold} />
@@ -121,6 +231,24 @@ export function App() {
             />
           ) : (
             <InboxScreen
+              search={threadSearch}
+              onSearchChange={setThreadSearch}
+              onPreviewNotification={() => {
+                setNotices((current) => [
+                  {
+                    id: "preview",
+                    kind: "preview",
+                    thread:
+                      state.inbox.find((thread) => thread.status === "completed") ??
+                      state.working[0] ??
+                      null,
+                  },
+                  ...current.filter((item) => item.kind !== "preview"),
+                ]);
+                setClosingNoticeId(null);
+                setNoticePaused(false);
+                fold();
+              }}
               onMinimize={fold}
               shelf={shelf}
               onShelf={setShelf}
@@ -130,20 +258,69 @@ export function App() {
             />
           )
         ) : null}
-        {announcing ? (
-          <AnnounceCapsule
-            thread={announcing}
-            onOpen={() => void open({ kind: "thread", threadId: announcing.threadId })}
-            onDismiss={fold}
+        {mode.kind === "quick" ? (
+          <NewThreadScreen
+            compact
+            onContentHeightChange={setQuickHeight}
+            onPickerOpenChange={(pickerOpen) =>
+              setMode((current) =>
+                current.kind === "quick" ? { kind: "quick", pickerOpen } : current,
+              )
+            }
+            onBack={fold}
+            onMinimize={fold}
+            onLaunched={(threadId) => void open({ kind: "thread", threadId })}
+            onError={setToast}
           />
-        ) : (
-          <IslandCapsule
-            mood={mood}
-            working={working}
-            onClick={() => (mode.kind === "open" ? fold() : void open())}
+        ) : null}
+        <IslandCapsule
+          mood={mood}
+          working={working}
+          folded={mode.kind === "folded"}
+          expanded={mode.kind === "open" || mode.kind === "quick"}
+          revealed={revealed && !noticeVisible}
+          space={hoverSpace && !noticeVisible}
+          onRevealChange={reveal}
+          onPillHidden={() => {
+            if (mode.kind === "folded" && !revealed) setHoverSpace(false);
+          }}
+          onOpenThread={(threadId) => void open({ kind: "thread", threadId })}
+          onOpenInbox={() => void open({ kind: "inbox" })}
+          onNewThread={() => (connected ? setMode({ kind: "quick" }) : void open())}
+          onClick={() => {
+            if (mode.kind === "open" || mode.kind === "quick") fold();
+            else void open();
+          }}
+        />
+        {notice && noticeVisible ? (
+          <NotificationCard
+            key={notice.id}
+            notice={notice}
+            remaining={notices.length - 1}
+            closing={noticeClosing}
+            side={mascotX > size.width / 2 ? "left" : "right"}
+            onPauseChange={setNoticePaused}
+            onDismiss={dismissNotice}
+            onClosed={removeNotice}
+            onReply={() => {
+              removeNotice();
+              void open(
+                notice.thread
+                  ? { kind: "thread", threadId: notice.thread.threadId }
+                  : { kind: "inbox" },
+              );
+            }}
+            onOpen={() => {
+              removeNotice();
+              if (notice.thread) {
+                void api().openInT3Code(notice.thread.threadId);
+                return;
+              }
+              void open({ kind: "inbox" });
+            }}
           />
-        )}
-        {toast && mode.kind === "open" ? (
+        ) : null}
+        {toast && (mode.kind === "open" || mode.kind === "quick") ? (
           <div
             role="status"
             className="dropdown-glass absolute inset-x-6 bottom-6 z-40 rounded-lg px-3 py-2 text-sm text-popover-foreground shadow-lg"

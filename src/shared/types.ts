@@ -39,13 +39,63 @@ export interface ThreadSummary {
   readonly pendingRequestCount: number;
   /** T3 Code's unread: the latest run finished after the user last looked at the thread. */
   readonly unread: boolean;
+  readonly latestRunCompletedAt?: string | null;
+  readonly pendingRequestKey?: string | null;
+}
+
+export interface ThreadSearchInput {
+  readonly query: string;
+  readonly projectIds: readonly string[];
+}
+
+export interface ThreadSearchHit extends ThreadSummary {
+  readonly snippet?: string;
+}
+
+export interface ThreadSearchResult {
+  readonly threads: readonly ThreadSearchHit[];
+  readonly error: string | null;
 }
 
 export interface ProjectSummary {
   readonly id: string;
   readonly title: string;
   readonly workspaceRoot: string;
+  readonly archivedAt?: string | null;
+  readonly faviconPath?: string | null;
+  readonly projectIcon?: ProjectIcon | null;
 }
+
+export type ProjectIcon =
+  | { readonly kind: "monogram"; readonly text: string; readonly color: string }
+  | { readonly kind: "emoji"; readonly emoji: string }
+  | {
+      readonly kind: "lucide";
+      readonly name: string;
+      readonly color: string;
+      readonly monogramText?: string;
+      readonly monogram?: string;
+    };
+
+export type ProjectIconColor =
+  | "gray"
+  | "red"
+  | "orange"
+  | "amber"
+  | "yellow"
+  | "lime"
+  | "green"
+  | "emerald"
+  | "teal"
+  | "cyan"
+  | "sky"
+  | "blue"
+  | "indigo"
+  | "violet"
+  | "purple"
+  | "fuchsia"
+  | "pink"
+  | "rose";
 
 export interface ModelOption {
   readonly id: string;
@@ -64,6 +114,8 @@ export interface Provider {
   readonly driverKind: string;
   readonly displayName: string;
   readonly models: readonly ProviderModel[];
+  readonly available?: boolean;
+  readonly iconUrl?: string;
 }
 
 export interface ModelSelection {
@@ -91,6 +143,7 @@ export interface CompanionState {
   readonly providers: readonly Provider[];
   /** When the live connection last delivered an update. */
   readonly syncedAt: string | null;
+  readonly synchronized?: boolean;
 }
 
 export interface ThreadItem {
@@ -101,13 +154,34 @@ export interface ThreadItem {
   readonly status: string;
   readonly createdBy: string;
   readonly updatedAt: string;
+  readonly attachments?: readonly ImageAttachment[];
+}
+
+export interface DraftImage {
+  readonly id: string;
+  readonly name: string;
+  readonly mimeType: string;
+  readonly sizeBytes: number;
+  readonly dataUrl: string;
+}
+
+export interface ImageAttachment {
+  readonly type: "image";
+  readonly id: string;
+  readonly name: string;
+  readonly mimeType: string;
+  readonly sizeBytes: number;
 }
 
 export interface PendingQuestion {
   readonly id: string;
   readonly header: string | null;
   readonly question: string;
-  readonly options: ReadonlyArray<{ readonly label: string; readonly value: string; readonly description: string | null }>;
+  readonly options: ReadonlyArray<{
+    readonly label: string;
+    readonly value: string;
+    readonly description: string | null;
+  }>;
   readonly multiSelect: boolean;
   readonly allowCustomAnswer: boolean;
 }
@@ -121,7 +195,11 @@ export interface PendingRequest {
   /** For approvals: what it wants to do, e.g. a command. */
   readonly title: string | null;
   readonly detail: string | null;
-  readonly decisions: ReadonlyArray<{ readonly decision: string; readonly label: string; readonly warning: string | null }>;
+  readonly decisions: ReadonlyArray<{
+    readonly decision: string;
+    readonly label: string;
+    readonly warning: string | null;
+  }>;
   readonly questions: readonly PendingQuestion[];
 }
 
@@ -151,6 +229,11 @@ export type ActionResult<T = void> =
 export type OrganizeAction = "settle" | "unsettle" | "snooze" | "unsnooze" | "mark_unread";
 
 /** What the renderer may ask of the main process. */
+export interface CompanionWindowLayout {
+  readonly width: number;
+  readonly mascotX: number;
+}
+
 export interface CompanionApi {
   getState(): Promise<CompanionState>;
   onState(listener: (state: CompanionState) => void): () => void;
@@ -158,22 +241,37 @@ export interface CompanionApi {
   connect(pairing: string, address: string | null): Promise<ActionResult>;
   signOut(): Promise<void>;
   /** Sizes the window to what the island shows; `focus` when it takes keyboard input. */
-  resize(size: { width: number; height: number; focus: boolean }): Promise<void>;
+  resize(size: {
+    width: number;
+    height: number;
+    focus: boolean;
+    notification?: boolean;
+  }): Promise<CompanionWindowLayout>;
+  onWindowLayout(listener: (layout: CompanionWindowLayout) => void): () => void;
   /** Moves the window while the capsule is dragged; `settled` ends the drag and saves the spot. */
   move(position: { x: number; y: number; settled: boolean }): Promise<void>;
   /** The window was asked to close (Cmd+W); the island folds instead. */
   onFoldRequest(listener: () => void): () => void;
   /** The cursor, relative to the window's top-left, whenever it moves anywhere on screen. */
   onCursor(listener: (point: { x: number; y: number }) => void): () => void;
+  searchThreads(input: ThreadSearchInput): Promise<ThreadSearchResult>;
+  projectIcon(projectId: string): Promise<string | null>;
+  imageUrl(attachmentId: string): Promise<string | null>;
   openThread(threadId: string | null): Promise<void>;
   onThreadDetail(listener: (detail: ThreadDetail) => void): () => void;
   /** Sends a message; a model selection switches the model starting with this turn. */
-  send(threadId: string, message: string, modelSelection: ModelSelection | null): Promise<ActionResult>;
+  send(
+    threadId: string,
+    message: string,
+    modelSelection: ModelSelection | null,
+    images?: readonly DraftImage[],
+  ): Promise<ActionResult>;
   respond(threadId: string, requestId: string, response: RequestResponse): Promise<ActionResult>;
   launch(input: {
     projectId: string;
     message: string;
     modelSelection: ModelSelection | null;
+    images?: readonly DraftImage[];
   }): Promise<ActionResult<{ threadId: string }>>;
   organize(threadId: string, action: OrganizeAction, snoozedUntil?: string): Promise<ActionResult>;
   interrupt(threadId: string): Promise<ActionResult>;

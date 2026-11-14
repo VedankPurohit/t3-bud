@@ -1,0 +1,76 @@
+.composer-image-tray {
+  display: flex;
+  gap: 8px;
+  padding: 10px 14px 0;
+  overflow-x: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--muted-foreground) transparent;
+}
+.composer-image {
+  position: relative;
+  width: 52px;
+  height: 52px;
+  flex-shrink: 0;
+  overflow: hidden;
+  border-radius: 8px;
+  background: var(--muted);
+}
+.composer-image img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.composer-image button {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  display: grid;
+  width: 20px;
+  height: 20px;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  background: var(--popover);
+  color: var(--foreground);
+  cursor: pointer;
+}
+.composer-image button:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+.composer-image button:hover {
+  background: var(--destructive);
+  color: var(--destructive-foreground);
+}
+.composer-image button:focus-visible,
+.composer-image-add:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
+}
+.composer-image-add {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  place-items: center;
+  border: 0;
+  border-radius: var(--control-radius);
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+}
+.composer-image-add:hover {
+  background: var(--accent);
+  color: var(--foreground);
+}
+.composer-image-add:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+.composer-image-error {
+  margin: 0;
+  padding: 0 14px 8px;
+  color: var(--error-foreground);
+  font-size: 11px;
+  line-height: 15px;
+}

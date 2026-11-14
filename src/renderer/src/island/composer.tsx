@@ -1,7 +1,12 @@
-import type { ModelSelection, Provider } from "@shared/types";
-import { CheckIcon, SearchIcon } from "lucide-react";
+import type { DraftImage, ModelSelection, Provider } from "@shared/types";
+import { CheckIcon, ImagePlusIcon, SearchIcon, XIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
+import { createDraftStore } from "../lib/drafts";
+import { imageDrafts, unsentImages } from "../lib/image-drafts";
+import { clipboardImages, prepareImages } from "../lib/paste-images";
+import { imageLimitError, IMAGE_MIME_TYPES } from "@shared/images";
+import "./composer-images.css";
 import { modelLabel } from "../lib/format";
 import { cn } from "../t3/lib/utils";
 import { ProviderGlyph } from "./icons";
@@ -14,7 +19,8 @@ import { ProviderGlyph } from "./icons";
 const EFFORT_IDS = new Set(["reasoningEffort", "effort"]);
 
 const effortLabel = (value: string) =>
-  ({ xhigh: "Extra high", max: "Max", ultra: "Ultra" })[value] ?? value.charAt(0).toUpperCase() + value.slice(1);
+  ({ xhigh: "Extra high", max: "Max", ultra: "Ultra" })[value] ??
+  value.charAt(0).toUpperCase() + value.slice(1);
 
 /** ComposerControl at size "xs". */
 const composerControlXs =
@@ -27,7 +33,13 @@ function EffortGlyph(props: { count: number; filled: number }) {
   const width = 4 * props.count - 2;
   const step = Math.max(1, Math.round(maxBar / 2 / Math.max(props.count - 1, 1)));
   return (
-    <svg aria-hidden="true" width={width} height={height} viewBox={`0 0 ${width} ${height}`} className="shrink-0">
+    <svg
+      aria-hidden="true"
+      width={width}
+      height={height}
+      viewBox={`0 0 ${width} ${height}`}
+      className="shrink-0"
+    >
       {Array.from({ length: props.count }, (_, index) => {
         const barHeight = maxBar - (props.count - 1 - index) * step;
         return (
@@ -68,24 +80,37 @@ function ModelPicker(props: {
   selection: ModelSelection | null;
   onChange: (selection: ModelSelection) => void;
   onClose: () => void;
+  placement?: "above" | "below";
 }) {
   const { providers, selection } = props;
-  const [providerId, setProviderId] = useState(selection?.instanceId ?? providers[0]?.providerInstanceId ?? "");
+  const [providerId, setProviderId] = useState(
+    selection?.instanceId ?? providers[0]?.providerInstanceId ?? "",
+  );
   const [query, setQuery] = useState("");
-  const provider = providers.find((candidate) => candidate.providerInstanceId === providerId) ?? providers[0];
+  const provider =
+    providers.find((candidate) => candidate.providerInstanceId === providerId) ?? providers[0];
   const needle = query.trim().toLowerCase();
   const models = (provider?.models ?? []).filter(
-    (model) => !needle || model.id.toLowerCase().includes(needle) || modelLabel(model.id).toLowerCase().includes(needle),
+    (model) =>
+      !needle ||
+      model.id.toLowerCase().includes(needle) ||
+      modelLabel(model.id).toLowerCase().includes(needle),
   );
-  const effort = effortOf(providers, selection);
+  const effort =
+    selection?.instanceId === provider?.providerInstanceId ? effortOf(providers, selection) : null;
   const pick = (instanceId: string, model: string, value?: string) => {
     const option = providers
       .find((candidate) => candidate.providerInstanceId === instanceId)
       ?.models.find((candidate) => candidate.id === model)
       ?.options.find((candidate) => EFFORT_IDS.has(candidate.id));
-    const keep = effort?.value && option?.values.includes(effort.value) ? effort.value : option?.default;
+    const keep =
+      effort?.value && option?.values.includes(effort.value) ? effort.value : option?.default;
     const chosen = value ?? keep;
-    props.onChange({ instanceId, model, ...(option && chosen ? { options: [{ id: option.id, value: chosen }] } : {}) });
+    props.onChange({
+      instanceId,
+      model,
+      ...(option && chosen ? { options: [{ id: option.id, value: chosen }] } : {}),
+    });
     if (!option || value !== undefined) props.onClose();
   };
   const railButton =
@@ -95,7 +120,10 @@ function ModelPicker(props: {
     <div
       data-popup-open
       data-slot="popover-popup"
-      className="dropdown-glass panel-in absolute right-2.5 bottom-[calc(100%+6px)] left-2.5 z-30 flex h-[232px] overflow-hidden rounded-lg text-popover-foreground shadow-[0_16px_40px_-18px_rgb(0_0_0/55%)] dark:shadow-[0_18px_44px_-18px_rgb(0_0_0/80%)]"
+      className={cn(
+        "dropdown-glass panel-in absolute right-2.5 left-2.5 z-30 flex h-[232px] overflow-hidden rounded-lg text-popover-foreground shadow-[0_16px_40px_-18px_rgb(0_0_0/55%)] dark:shadow-[0_18px_44px_-18px_rgb(0_0_0/80%)]",
+        props.placement === "below" ? "top-[calc(100%+6px)]" : "bottom-[calc(100%+6px)]",
+      )}
     >
       <div aria-label="Providers" className="w-11 shrink-0 overflow-y-auto bg-muted/30">
         <div className="flex flex-col gap-1 p-1">
@@ -107,9 +135,16 @@ function ModelPicker(props: {
               aria-label={candidate.displayName}
               aria-pressed={candidate.providerInstanceId === provider?.providerInstanceId}
               onClick={() => setProviderId(candidate.providerInstanceId)}
-              className={cn(railButton, candidate.providerInstanceId === provider?.providerInstanceId && "bg-background")}
+              className={cn(
+                railButton,
+                candidate.providerInstanceId === provider?.providerInstanceId && "bg-background",
+              )}
             >
-              <ProviderGlyph driverKind={candidate.driverKind} className="size-5" />
+              <ProviderGlyph
+                instanceId={candidate.providerInstanceId}
+                driverKind={candidate.driverKind}
+                className="size-5"
+              />
             </button>
           ))}
         </div>
@@ -127,9 +162,15 @@ function ModelPicker(props: {
             />
           </label>
         </div>
-        <div role="listbox" aria-label="Models" className="flex min-h-0 flex-col gap-0.5 overflow-y-auto py-1.5 pr-px pl-2">
+        <div
+          role="listbox"
+          aria-label="Models"
+          className="flex min-h-0 flex-col gap-0.5 overflow-y-auto py-1.5 pr-px pl-2"
+        >
           {models.map((model) => {
-            const active = selection?.instanceId === provider?.providerInstanceId && selection?.model === model.id;
+            const active =
+              selection?.instanceId === provider?.providerInstanceId &&
+              selection?.model === model.id;
             return (
               <button
                 key={model.id}
@@ -139,23 +180,35 @@ function ModelPicker(props: {
                 onClick={() => provider && pick(provider.providerInstanceId, model.id)}
                 className={cn(comboboxItem, "me-1 text-left", active && "bg-foreground/[0.06]")}
               >
-                <ProviderGlyph driverKind={provider?.driverKind ?? null} className="size-4" />
-                <span className="min-w-0 flex-1 truncate leading-snug">{modelLabel(model.id)}</span>
+                <ProviderGlyph
+                  instanceId={provider?.providerInstanceId}
+                  driverKind={provider?.driverKind ?? null}
+                  className="size-4"
+                />
+                <span className="min-w-0 flex-1 truncate leading-snug">
+                  {model.label ?? modelLabel(model.id)}
+                </span>
                 {active ? <CheckIcon className="size-3.5 shrink-0" aria-hidden /> : null}
               </button>
             );
           })}
-          {models.length === 0 ? <p className="px-2 py-3 text-xs text-muted-foreground">No matching models</p> : null}
+          {models.length === 0 ? (
+            <p className="px-2 py-3 text-xs text-muted-foreground">No matching models</p>
+          ) : null}
         </div>
       </div>
       {effort && selection ? (
-        <div className="flex w-[112px] min-h-0 shrink-0 flex-col border-l border-border/70 bg-muted/40">
+        <div className="flex w-[128px] min-h-0 shrink-0 flex-col border-l border-border/70 bg-muted/40">
           <div className="shrink-0 px-3 pt-2.5">
             <div className="flex h-8.25 -translate-y-px items-center border-b border-border/70 pb-1.5 text-sm text-muted-foreground">
               Effort
             </div>
           </div>
-          <div role="radiogroup" aria-label="Effort" className="flex min-h-0 flex-col gap-0.5 overflow-y-auto px-2 pt-2.5 pb-1.5">
+          <div
+            role="radiogroup"
+            aria-label="Effort"
+            className="flex min-h-0 flex-col gap-0.5 overflow-y-auto px-2 pt-2.5 pb-1.5"
+          >
             {effort.option.values.map((value) => (
               <button
                 key={value}
@@ -176,46 +229,118 @@ function ModelPicker(props: {
   );
 }
 
-/** Unsent text survives folding the island and switching threads. */
-const drafts = new Map<string, string>();
+function browserStorage() {
+  try {
+    return window.localStorage;
+  } catch {
+    return null;
+  }
+}
+const drafts = createDraftStore(browserStorage());
 
 const sendArrow = (
   <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-    <path d="M7 11.5V2.5M7 2.5L3 6.5M7 2.5L11 6.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+    <path
+      d="M7 11.5V2.5M7 2.5L3 6.5M7 2.5L11 6.5"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
   </svg>
 );
 
 /** ComposerSurface Shell + Host + Main, with a real prompt, model chip, and send or stop. */
 export function Composer(props: {
+  pickerPlacement?: "above" | "below";
+  onPickerOpenChange?: (open: boolean) => void;
   draftKey: string;
   placeholder: string;
   providers: readonly Provider[];
   selection: ModelSelection | null;
   onSelectionChange: (selection: ModelSelection) => void;
-  onSubmit: (message: string) => Promise<boolean>;
+  onSubmit: (message: string, images: readonly DraftImage[]) => Promise<boolean>;
   running?: boolean;
   onStop?: () => void;
   disabled?: boolean;
 }) {
-  const [text, setTextState] = useState(() => drafts.get(props.draftKey) ?? "");
+  const [text, setTextState] = useState(() => drafts.read(props.draftKey));
+  const [saved, setSaved] = useState(true);
   const [sending, setSending] = useState(false);
+  const [images, setImagesState] = useState<readonly DraftImage[]>([]);
+  const imagesRef = useRef<readonly DraftImage[]>([]);
+  const [imagesLoaded, setImagesLoaded] = useState(false);
+  const [imagesSaved, setImagesSaved] = useState(true);
+  const [preparing, setPreparing] = useState(0);
+  const [imageError, setImageError] = useState<string | null>(null);
+  const intake = useRef(Promise.resolve());
+  const sendingRef = useRef(false);
+  const fileInput = useRef<HTMLInputElement>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const input = useRef<HTMLTextAreaElement>(null);
   const shell = useRef<HTMLDivElement>(null);
+  const setImages = (next: readonly DraftImage[]) => {
+    imagesRef.current = next;
+    setImagesState(next);
+    setImagesSaved(false);
+    void imageDrafts.write(props.draftKey, next).then(setImagesSaved);
+  };
+  // Image drafts use IndexedDB so clipboard images do not exhaust localStorage's small quota.
+  useEffect(() => {
+    let current = true;
+    void imageDrafts.read(props.draftKey).then((stored) => {
+      if (!current) return;
+      imagesRef.current = stored;
+      setImagesState(stored);
+      setImagesLoaded(true);
+    });
+    return () => {
+      current = false;
+    };
+  }, [props.draftKey]);
+
+  const addImages = (files: File[]) => {
+    setPreparing((count) => count + 1);
+    setImageError(null);
+    intake.current = intake.current
+      .then(async () => {
+        if (!imagesLoaded) imagesRef.current = await imageDrafts.read(props.draftKey);
+        const added = await prepareImages(files, imagesRef.current);
+        const next = [...imagesRef.current, ...added];
+        const error = imageLimitError(next);
+        if (error) throw new Error(error);
+        setImages(next);
+      })
+      .catch((error: unknown) => {
+        setImageError(
+          error instanceof Error ? error.message : "Could not paste the image. Try again.",
+        );
+      })
+      .finally(() => setPreparing((count) => count - 1));
+  };
+  const changePicker = (open: boolean) => {
+    setPickerOpen(open);
+    props.onPickerOpenChange?.(open);
+  };
   const setText = (value: string) => {
-    drafts.set(props.draftKey, value);
+    setSaved(drafts.write(props.draftKey, value));
     setTextState(value);
   };
+  // Persist mounted text too, so an existing draft survives development hot reloads.
+  useEffect(() => {
+    setSaved(drafts.write(props.draftKey, text));
+  }, [props.draftKey]);
+
   // Closes the model picker on outside clicks and Escape, before Escape can fold the island.
   useEffect(() => {
     if (!pickerOpen) return;
     const onDown = (event: MouseEvent) => {
-      if (!shell.current?.contains(event.target as Node)) setPickerOpen(false);
+      if (!shell.current?.contains(event.target as Node)) changePicker(false);
     };
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       event.stopPropagation();
-      setPickerOpen(false);
+      changePicker(false);
       input.current?.focus();
     };
     window.addEventListener("mousedown", onDown);
@@ -228,27 +353,57 @@ export function Composer(props: {
 
   const submit = async () => {
     const message = text.trim();
-    if (!message || sending || props.disabled) return;
+    const submittedImages = imagesRef.current;
+    if (
+      (!message && !submittedImages.length) ||
+      sendingRef.current ||
+      preparing ||
+      !imagesLoaded ||
+      props.disabled
+    )
+      return;
+    const submitted = text;
+    sendingRef.current = true;
     setSending(true);
-    const ok = await props.onSubmit(message);
-    setSending(false);
-    if (ok) setText("");
-    input.current?.focus();
+    try {
+      const ok = await props.onSubmit(message, submittedImages);
+      if (ok && drafts.complete(props.draftKey, submitted))
+        setTextState((current) => (current === submitted ? "" : current));
+      if (ok) {
+        setImages(unsentImages(imagesRef.current, submittedImages));
+      }
+    } catch (error) {
+      setImageError(
+        error instanceof Error ? error.message : "Could not send. Your draft was kept.",
+      );
+    } finally {
+      sendingRef.current = false;
+      setSending(false);
+      input.current?.focus();
+    }
   };
-  const canSend = text.trim().length > 0 && !sending && !props.disabled;
-  const provider = props.providers.find((candidate) => candidate.providerInstanceId === props.selection?.instanceId);
+  const canSend =
+    (text.trim().length > 0 || images.length > 0) &&
+    imagesLoaded &&
+    !preparing &&
+    !sending &&
+    !props.disabled;
+  const provider = props.providers.find(
+    (candidate) => candidate.providerInstanceId === props.selection?.instanceId,
+  );
   const effort = effortOf(props.providers, props.selection);
   const effortIndex = effort?.value ? effort.option.values.indexOf(effort.value) : -1;
 
   return (
-    <div ref={shell} className="relative shrink-0 px-2.5 pb-2.5">
+    <div data-companion-composer ref={shell} className="relative shrink-0 px-2.5 pb-2.5">
       {pickerOpen ? (
         <ModelPicker
-          providers={props.providers}
+          providers={props.providers.filter((candidate) => candidate.available !== false)}
+          placement={props.pickerPlacement}
           selection={props.selection}
           onChange={props.onSelectionChange}
           onClose={() => {
-            setPickerOpen(false);
+            changePicker(false);
             input.current?.focus();
           }}
         />
@@ -262,6 +417,25 @@ export function Composer(props: {
           className="relative z-10 w-full rounded-2xl shadow-composer after:pointer-events-none after:absolute after:inset-0 after:z-1 after:rounded-[inherit] after:border after:border-(--chat-composer-outline) dark:shadow-none dark:after:inset-shadow-2xs dark:after:inset-shadow-(color:--chat-composer-highlight)"
         >
           <div className="group relative z-10 rounded-2xl p-px">
+            {images.length > 0 ? (
+              <div className="composer-image-tray" aria-label="Attached images">
+                {images.map((image) => (
+                  <div key={image.id} className="composer-image" title={image.name}>
+                    <img src={image.dataUrl} alt={image.name} />
+                    <button
+                      type="button"
+                      aria-label={`Remove ${image.name}`}
+                      disabled={sending}
+                      onClick={() =>
+                        setImages(imagesRef.current.filter((item) => item.id !== image.id))
+                      }
+                    >
+                      <XIcon size={12} aria-hidden />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            ) : null}
             <div className="relative px-4 pt-3.5 pb-2">
               <textarea
                 ref={input}
@@ -270,6 +444,12 @@ export function Composer(props: {
                 value={text}
                 placeholder={props.placeholder}
                 onChange={(event) => setText(event.target.value)}
+                onPaste={(event) => {
+                  const files = clipboardImages(event.clipboardData);
+                  if (!files.length) return;
+                  event.preventDefault();
+                  addImages(files);
+                }}
                 onKeyDown={(event) => {
                   if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
                     event.preventDefault();
@@ -279,29 +459,90 @@ export function Composer(props: {
                 className="selectable block max-h-32 min-h-6 w-full resize-none bg-transparent text-sm leading-relaxed text-foreground outline-none [field-sizing:content] placeholder:text-placeholder"
               />
             </div>
+            {imageError ? (
+              <p role="alert" className="composer-image-error">
+                {imageError}
+              </p>
+            ) : null}
             <div className="flex min-w-0 flex-nowrap items-center overflow-visible px-2 pb-2">
+              <input
+                ref={fileInput}
+                type="file"
+                accept={IMAGE_MIME_TYPES.join(",")}
+                multiple
+                hidden
+                onChange={(event) => {
+                  const files = Array.from(event.target.files ?? []);
+                  if (files.length) addImages(files);
+                  event.target.value = "";
+                  input.current?.focus();
+                }}
+              />
+              <button
+                type="button"
+                className="composer-image-add"
+                aria-label="Attach images"
+                disabled={!imagesLoaded}
+                onClick={() => fileInput.current?.click()}
+              >
+                <ImagePlusIcon size={15} aria-hidden />
+              </button>
               <div className="flex min-w-0 flex-1 flex-nowrap items-center justify-end gap-2">
+                {text.length > 0 || images.length > 0 || preparing ? (
+                  <span
+                    role="status"
+                    className={cn(
+                      "shrink-0 text-[11px]",
+                      saved && imagesSaved ? "text-muted-foreground" : "text-warning-foreground",
+                    )}
+                  >
+                    {preparing
+                      ? "Preparing image…"
+                      : sending
+                        ? "Sending…"
+                        : saved && imagesSaved
+                          ? "Draft saved"
+                          : "Draft not saved to disk"}
+                  </span>
+                ) : null}
                 <div className="relative flex min-w-0 flex-1 items-center justify-end gap-0.5">
                   <button
                     type="button"
                     aria-expanded={pickerOpen}
                     aria-label="Choose model"
                     disabled={props.providers.length === 0}
-                    onClick={() => setPickerOpen((open) => !open)}
-                    className={cn(composerControlXs, "min-w-0 shrink justify-between", pickerOpen && "text-foreground")}
+                    onClick={() => changePicker(!pickerOpen)}
+                    className={cn(
+                      composerControlXs,
+                      "min-w-0 shrink justify-between",
+                      pickerOpen && "text-foreground",
+                    )}
                   >
                     <span className="flex min-w-0 flex-1 items-center gap-1">
                       {props.selection ? (
-                        <ProviderGlyph driverKind={provider?.driverKind ?? props.selection.instanceId} className="size-3.5" />
+                        <ProviderGlyph
+                          instanceId={props.selection.instanceId}
+                          driverKind={provider?.driverKind ?? props.selection.instanceId}
+                          className="size-3.5"
+                        />
                       ) : null}
                       <span className="min-w-0 flex-1 truncate">
-                        {props.selection ? modelLabel(props.selection.model) : "Choose a model"}
+                        {props.selection
+                          ? (provider?.models.find((model) => model.id === props.selection?.model)
+                              ?.label ?? modelLabel(props.selection.model))
+                          : "Choose a model"}
                       </span>
                       {effort && effortIndex >= 0 ? (
-                        <span className="flex shrink-0 items-center text-muted-foreground" title={effortLabel(effort.value ?? "")}>
+                        <span
+                          className="flex shrink-0 items-center text-muted-foreground"
+                          title={effortLabel(effort.value ?? "")}
+                        >
                           <EffortGlyph
                             count={3}
-                            filled={Math.max(1, Math.ceil(((effortIndex + 1) / effort.option.values.length) * 3))}
+                            filled={Math.max(
+                              1,
+                              Math.ceil(((effortIndex + 1) / effort.option.values.length) * 3),
+                            )}
                           />
                         </span>
                       ) : null}
@@ -315,7 +556,13 @@ export function Composer(props: {
                     onClick={props.onStop}
                     className="flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-full bg-destructive/90 text-white shadow-xs shadow-destructive/24 inset-shadow-control-highlight transition-colors duration-150 hover:bg-destructive active:inset-shadow-control-pressed active:shadow-none"
                   >
-                    <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor" aria-hidden="true">
+                    <svg
+                      width="12"
+                      height="12"
+                      viewBox="0 0 12 12"
+                      fill="currentColor"
+                      aria-hidden="true"
+                    >
                       <rect x="2" y="2" width="8" height="8" rx="1.5" />
                     </svg>
                   </button>

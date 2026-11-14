@@ -7,44 +7,50 @@ import type {
   ModelSelection,
   OrganizeAction,
   PendingRequest,
-  ProjectSummary,
   Provider,
   RequestResponse,
   ThreadDetail,
   ThreadStatus,
+  ThreadSearchInput,
+  ThreadSearchResult,
+  DraftImage,
+  ImageAttachment,
 } from "../shared/types";
 import { config } from "./config";
-import { pair, parsePairingInput, SessionEndedError, sessionIsValid, socketUrl, type Pairing } from "./t3/auth";
+import { uploadImages, releaseImages } from "./t3/images";
+import {
+  pair,
+  parsePairingInput,
+  SessionEndedError,
+  sessionIsValid,
+  socketUrl,
+  type Pairing,
+} from "./t3/auth";
+import { toProjects, toProviders, type ConfigProvider, type ProviderInstances } from "./t3/catalog";
 import { RpcError, RpcSocket } from "./t3/rpc";
+import { searchThreadCatalog, type ServerSearchResult } from "./t3/search";
 import { buildSections } from "./t3/sections";
-import { applyShellItem, emptyShell, pendingByListedThread, type RawThreadShell, type ShellState } from "./t3/shell";
-import { applyThreadItem, emptyThreadStream, pendingRequests, type RawTurnItem, type ThreadStreamState } from "./t3/thread";
+import {
+  applyShellItem,
+  emptyShell,
+  pendingByListedThread,
+  type RawThreadShell,
+  type ShellState,
+} from "./t3/shell";
+import {
+  applyThreadItem,
+  emptyThreadStream,
+  pendingRequests,
+  type RawTurnItem,
+  type ThreadStreamState,
+} from "./t3/thread";
 
 /** Coalesces bursts (a streaming reply sends many frames) into one update per frame budget. */
 const PUBLISH_DELAY_MS = 60;
 const RECONNECT_CAP_MS = 30_000;
 
-interface ConfigProvider {
-  instanceId: string;
-  driver: string;
-  displayName?: string;
-  enabled: boolean;
-  installed: boolean;
-  status: string;
-  models: Array<{
-    slug: string;
-    name?: string;
-    capabilities?: {
-      optionDescriptors?: Array<{
-        id: string;
-        options?: Array<{ id: string; isDefault?: boolean }>;
-        currentValue?: string | boolean;
-      }>;
-    };
-  }>;
-}
-
-const errorMessage = (error: unknown) => (error instanceof Error ? error.message : "Something went wrong.");
+const errorMessage = (error: unknown) =>
+  error instanceof Error ? error.message : "Something went wrong.";
 
 /** Keeps a live view of one T3 Code environment over its client protocol. */
 export class CompanionStore {
@@ -53,11 +59,16 @@ export class CompanionStore {
   private connection: Connection = { state: "unconfigured", suggestedUrl: null };
   private shell: ShellState = emptyShell;
   private providers: Provider[] = [];
+  private providerConfig: ConfigProvider[] = [];
+  private providerInstances: ProviderInstances = {};
+  private searchRows = new Map<string, RawThreadShell>();
+  private olderSettledSearch = false;
   private syncedAt: string | null = null;
   private retry = 0;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private publishTimer: ReturnType<typeof setTimeout> | null = null;
   private generation = 0;
+  private readonly projectIcons = new Map<string, Promise<string | null>>();
 
   private openThreadId: string | null = null;
   private thread: ThreadStreamState = emptyThreadStream;
@@ -75,14 +86,7 @@ export class CompanionStore {
 
   state(): CompanionState {
     const sections = buildSections(this.shell, Date.now());
-    const lastActivity = new Map<string, number>();
-    for (const thread of this.shell.threads.values()) {
-      lastActivity.set(thread.projectId, Math.max(lastActivity.get(thread.projectId) ?? 0, Date.parse(thread.updatedAt)));
-    }
-    const projects: ProjectSummary[] = [...this.shell.projects.values()]
-      .filter((project) => !project.archivedAt)
-      .map((project) => ({ id: project.id, title: project.title, workspaceRoot: project.workspaceRoot }))
-      .sort((left, right) => (lastActivity.get(right.id) ?? 0) - (lastActivity.get(left.id) ?? 0));
+    const projects = toProjects(this.shell);
     return {
       connection: this.connection,
       environmentId: this.pairing?.environmentId ?? null,
@@ -90,6 +94,7 @@ export class CompanionStore {
       projects,
       providers: this.providers,
       syncedAt: this.syncedAt,
+      synchronized: this.shell.synchronized,
     };
   }
 
@@ -117,7 +122,11 @@ export class CompanionStore {
     const serverUrl = config.serverUrl();
     this.setConnection(
       serverUrl
-        ? { state: "needs-auth", serverUrl, reason: "The pairing expired. Pair the companion again." }
+        ? {
+            state: "needs-auth",
+            serverUrl,
+            reason: "The pairing expired. Pair the companion again.",
+          }
         : { state: "unconfigured", suggestedUrl },
     );
   }
@@ -125,7 +134,10 @@ export class CompanionStore {
   async pairWith(input: string, address: string | null): Promise<ActionResult> {
     const target = parsePairingInput(input, address);
     if (!target) {
-      return { ok: false, error: "Paste the pairing link from T3 Code, or its code together with the address." };
+      return {
+        ok: false,
+        error: "Paste the pairing link from T3 Code, or its code together with the address.",
+      };
     }
     this.setConnection({ state: "pairing", serverUrl: target.httpBaseUrl });
     try {
@@ -158,11 +170,46 @@ export class CompanionStore {
 
   private disconnect() {
     this.generation += 1;
+    this.projectIcons.clear();
+    this.searchRows.clear();
+    this.olderSettledSearch = false;
     if (this.retryTimer) clearTimeout(this.retryTimer);
     this.retryTimer = null;
     this.cancelThread = null;
     this.socket?.close();
     this.socket = null;
+  }
+
+  async searchThreads(input: ThreadSearchInput): Promise<ThreadSearchResult> {
+    const generation = this.generation;
+    const query = input.query.trim().slice(0, 200);
+    let server: ServerSearchResult = { matches: [] };
+    let error: string | null = null;
+    if (query.length >= 2) {
+      try {
+        if (!this.socket || this.socket.closed)
+          throw new Error("Can't reach T3 Code. Showing title matches.");
+        server = await this.socket.call<ServerSearchResult>("orchestration.searchThreads", {
+          query,
+          limit: 50,
+          ...(this.olderSettledSearch
+            ? {
+                olderSettledBefore: new Date().toISOString(),
+                projectIds: input.projectIds.length ? input.projectIds : undefined,
+              }
+            : {}),
+        });
+      } catch (cause) {
+        error = errorMessage(cause);
+      }
+    }
+    if (generation !== this.generation)
+      return { threads: [], error: "The connected environment changed." };
+    this.searchRows = new Map((server.threads ?? []).map((thread) => [thread.id, thread]));
+    return {
+      threads: searchThreadCatalog(this.shell, { ...input, query }, server, Date.now()),
+      error,
+    };
   }
 
   /** Coming back to the island retries a dropped connection at once. */
@@ -184,7 +231,11 @@ export class CompanionStore {
     } catch (error) {
       if (generation !== this.generation) return;
       if (error instanceof SessionEndedError) return this.sessionEnded(error.message);
-      this.setConnection({ state: "offline", serverUrl: pairing.httpBaseUrl, error: errorMessage(error) });
+      this.setConnection({
+        state: "offline",
+        serverUrl: pairing.httpBaseUrl,
+        error: errorMessage(error),
+      });
       return this.scheduleReconnect();
     }
     if (generation !== this.generation) return socket.close();
@@ -193,12 +244,48 @@ export class CompanionStore {
     this.setConnection({ state: "connected", serverUrl: pairing.httpBaseUrl });
 
     void socket
-      .call<{ providers: ConfigProvider[] }>("server.getConfig", {})
+      .call<{
+        providers: ConfigProvider[];
+        settings?: { providerInstances?: ProviderInstances };
+        shellOlderSettled?: boolean;
+      }>("server.getConfig", {})
       .then((serverConfig) => {
-        this.providers = toProviders(serverConfig.providers ?? []);
+        if (generation !== this.generation) return;
+        this.olderSettledSearch = serverConfig.shellOlderSettled === true;
+        this.providerConfig = serverConfig.providers ?? [];
+        this.providerInstances = serverConfig.settings?.providerInstances ?? {};
+        this.providers = toProviders(this.providerConfig, this.providerInstances);
         this.publish();
       })
       .catch(() => undefined);
+
+    socket.stream(
+      "subscribeServerConfig",
+      {},
+      (value) => {
+        if (generation !== this.generation) return;
+        const event = value as {
+          type: string;
+          config?: {
+            providers?: ConfigProvider[];
+            settings?: { providerInstances?: ProviderInstances };
+          };
+          payload?: {
+            providers?: ConfigProvider[];
+            settings?: { providerInstances?: ProviderInstances };
+          };
+        };
+        const providers = event.config?.providers ?? event.payload?.providers;
+        const instances =
+          event.config?.settings?.providerInstances ?? event.payload?.settings?.providerInstances;
+        if (!providers && !instances) return;
+        if (providers) this.providerConfig = providers;
+        if (instances) this.providerInstances = instances;
+        this.providers = toProviders(this.providerConfig, this.providerInstances);
+        this.publish();
+      },
+      () => undefined,
+    );
 
     // Resumes from the last sequence after a reconnect; the server sends what was missed.
     socket.stream(
@@ -230,7 +317,11 @@ export class CompanionStore {
         return this.sessionEnded("T3 Code ended this companion's session. Pair it again.");
       }
       if (generation !== this.generation) return;
-      this.setConnection({ state: "offline", serverUrl: pairing.httpBaseUrl, error: "Connection lost" });
+      this.setConnection({
+        state: "offline",
+        serverUrl: pairing.httpBaseUrl,
+        error: "Connection lost",
+      });
       this.scheduleReconnect();
     })();
   }
@@ -245,7 +336,8 @@ export class CompanionStore {
 
   /** The official client's ladder: a quick first retry, then jittered doubling up to a cap. */
   private scheduleReconnect() {
-    const ceiling = this.retry === 0 ? 250 : Math.min(RECONNECT_CAP_MS, 1000 * 2 ** (this.retry + 1));
+    const ceiling =
+      this.retry === 0 ? 250 : Math.min(RECONNECT_CAP_MS, 1000 * 2 ** (this.retry + 1));
     const delay = ceiling / 2 + (Math.random() * ceiling) / 2;
     this.retry += 1;
     if (this.retryTimer) clearTimeout(this.retryTimer);
@@ -309,20 +401,28 @@ export class CompanionStore {
     const opened = !this.visitSent;
     this.visitSent = true;
     this.visitedCompletion = completion;
-    const visitedAt = [shellThread.updatedAt, shellThread.latestRunCompletedAt ?? ""].sort().at(-1) ?? shellThread.updatedAt;
-    void this.dispatch({ type: "thread.visit", threadId, visitedAt, ...(opened ? { opened: true } : {}) }).catch(
-      () => undefined,
-    );
+    const visitedAt =
+      [shellThread.updatedAt, shellThread.latestRunCompletedAt ?? ""].sort().at(-1) ??
+      shellThread.updatedAt;
+    void this.dispatch({
+      type: "thread.visit",
+      threadId,
+      visitedAt,
+      ...(opened ? { opened: true } : {}),
+    }).catch(() => undefined);
   }
 
   private detail(): ThreadDetail {
     const threadId = this.openThreadId ?? "";
-    const shellThread: RawThreadShell | undefined = this.shell.threads.get(threadId);
+    const shellThread: RawThreadShell | undefined =
+      this.shell.threads.get(threadId) ?? this.searchRows.get(threadId);
     const projection = this.thread.projection;
     const messages = (projection?.messages ?? [])
       .filter((message) => message.role === "user" || message.role === "assistant")
       .toSorted((left, right) => Date.parse(left.createdAt) - Date.parse(right.createdAt));
-    const requests = projection ? pendingRequests(projection).map((item) => toRequest(threadId, item)) : [];
+    const requests = projection
+      ? pendingRequests(projection).map((item) => toRequest(threadId, item))
+      : [];
     const rolledUp = pendingByListedThread(this.shell.threads).get(threadId);
     const hiddenRequestCount = (rolledUp?.threadIds ?? []).filter((id) => id !== threadId).length;
     return {
@@ -340,15 +440,90 @@ export class CompanionStore {
         status: message.streaming ? "in_progress" : "completed",
         createdBy: message.role,
         updatedAt: message.updatedAt,
+        attachments: message.attachments?.filter((attachment) => attachment.type === "image"),
       })),
       requests,
       hiddenRequestCount,
       loading: projection === null,
-      error: this.socket ? null : this.connection.state === "offline" ? "Reconnecting to T3 Code…" : null,
+      error: this.socket
+        ? null
+        : this.connection.state === "offline"
+          ? "Reconnecting to T3 Code…"
+          : null,
     };
   }
 
   // ── Actions ────────────────────────────────────────────────────────────────────────────────
+
+  async imageUrl(attachmentId: string): Promise<string | null> {
+    const socket = this.socket;
+    const pairing = this.pairing;
+    if (!socket || !pairing) return null;
+    try {
+      const result = await socket.call<{ relativeUrl: string }>("assets.createUrl", {
+        resource: { _tag: "attachment", attachmentId, disposition: "inline" },
+      });
+      return new URL(result.relativeUrl, pairing.httpBaseUrl).href;
+    } catch {
+      return null;
+    }
+  }
+
+  private async withImages<T>(
+    images: readonly DraftImage[],
+    run: (attachments: readonly ImageAttachment[]) => Promise<T>,
+  ) {
+    const socket = this.socket;
+    const pairing = this.pairing;
+    const generation = this.generation;
+    if (!socket || !pairing) throw new Error("Not connected to T3 Code.");
+    const attachments = await uploadImages(socket, pairing.httpBaseUrl, images);
+    try {
+      if (generation !== this.generation)
+        throw new Error("The connected environment changed. Your draft was kept.");
+      return await run(attachments);
+    } catch (error) {
+      await releaseImages(socket, attachments);
+      throw error;
+    }
+  }
+
+  projectIcon(projectId: string): Promise<string | null> {
+    const project = this.shell.projects.get(projectId);
+    const socket = this.socket;
+    const pairing = this.pairing;
+    if (!project || !socket || !pairing) return Promise.resolve(null);
+    const key = JSON.stringify([project.id, project.workspaceRoot, project.faviconPath]);
+    const cached = this.projectIcons.get(key);
+    if (cached) return cached;
+    const request = (async () => {
+      try {
+        const asset = await socket.call<{ relativeUrl: string }>("assets.createUrl", {
+          resource: {
+            _tag: "project-favicon",
+            cwd: project.workspaceRoot,
+            ...(project.faviconPath ? { path: project.faviconPath } : {}),
+          },
+        });
+        const url = new URL(asset.relativeUrl, pairing.httpBaseUrl);
+        if (url.pathname.endsWith("/project-favicon-missing")) return null;
+        const response = await fetch(url, { signal: AbortSignal.timeout(5_000) });
+        if (!response.ok) return null;
+        const mime = response.headers.get("content-type")?.split(";")[0] ?? "";
+        if (!mime.startsWith("image/")) return null;
+        const bytes = await response.arrayBuffer();
+        if (bytes.byteLength > 4 * 1024 * 1024) return null;
+        return `data:${mime};base64,${Buffer.from(bytes).toString("base64")}`;
+      } catch {
+        this.projectIcons.delete(key);
+        return null;
+      }
+    })();
+    if (this.projectIcons.size >= 64)
+      this.projectIcons.delete(this.projectIcons.keys().next().value!);
+    this.projectIcons.set(key, request);
+    return request;
+  }
 
   private async dispatch(command: Record<string, unknown>) {
     const socket = this.socket;
@@ -364,22 +539,29 @@ export class CompanionStore {
     }
   }
 
-  send(threadId: string, text: string, modelSelection: ModelSelection | null) {
-    return this.act(async () => {
-      await this.dispatch({
-        type: "message.dispatch",
-        threadId,
-        messageId: randomUUID(),
-        text,
-        attachments: [],
-        createdBy: "user",
-        creationSource: "web",
-        dispatchMode: { type: "start_immediately" },
-        deliveryIntent: "auto",
-        // Switching on the next message works for every provider; a live switch does not.
-        ...(modelSelection ? { modelSelection } : {}),
-      });
-    });
+  send(
+    threadId: string,
+    text: string,
+    modelSelection: ModelSelection | null,
+    images: readonly DraftImage[] = [],
+  ) {
+    return this.act(() =>
+      this.withImages(images, async (attachments) => {
+        await this.dispatch({
+          type: "message.dispatch",
+          threadId,
+          messageId: randomUUID(),
+          text,
+          attachments,
+          createdBy: "user",
+          creationSource: "web",
+          dispatchMode: { type: "start_immediately" },
+          deliveryIntent: "auto",
+          // Switching on the next message works for every provider; a live switch does not.
+          ...(modelSelection ? { modelSelection } : {}),
+        });
+      }),
+    );
   }
 
   respond(threadId: string, requestId: string, response: RequestResponse) {
@@ -407,53 +589,36 @@ export class CompanionStore {
     });
   }
 
-  launch(input: { projectId: string; message: string; modelSelection: ModelSelection | null }) {
+  launch(input: {
+    projectId: string;
+    message: string;
+    modelSelection: ModelSelection | null;
+    images?: readonly DraftImage[];
+  }) {
     return this.act(async () => {
       const socket = this.socket;
       if (!socket) throw new Error("Not connected to T3 Code.");
       const project = this.shell.projects.get(input.projectId);
       const modelSelection = input.modelSelection ?? project?.defaultModelSelection ?? null;
       if (!modelSelection) throw new Error("Choose a model first.");
-      const firstLine = input.message.trim().split("\n")[0] ?? "New thread";
-      const result = await socket.call<{ threadId: string }>("orchestration.launchThread", {
-        commandId: randomUUID(),
-        creationSource: "web",
-        projectId: input.projectId,
-        title: firstLine.length > 60 ? `${firstLine.slice(0, 57)}…` : firstLine,
-        generateTitle: true,
-        modelSelection,
-        runtimeMode: "full-access",
-        interactionMode: "default",
-        workspaceStrategy: { type: "root" },
-        initialMessage: { messageId: randomUUID(), text: input.message, attachments: [] },
+      const firstLine = input.message.trim().split("\n")[0] || "Image attachment";
+      return this.withImages(input.images ?? [], async (attachments) => {
+        const result = await socket.call<{ threadId: string }>("orchestration.launchThread", {
+          commandId: randomUUID(),
+          creationSource: "web",
+          projectId: input.projectId,
+          title: firstLine.length > 60 ? `${firstLine.slice(0, 57)}…` : firstLine,
+          generateTitle: true,
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          workspaceStrategy: { type: "root" },
+          initialMessage: { messageId: randomUUID(), text: input.message, attachments },
+        });
+        return { threadId: result.threadId };
       });
-      return { threadId: result.threadId };
     });
   }
-}
-
-function toProviders(providers: ConfigProvider[]): Provider[] {
-  return providers
-    .filter((provider) => provider.enabled && provider.installed && provider.status === "ready")
-    .map((provider) => ({
-      providerInstanceId: provider.instanceId,
-      driverKind: provider.driver,
-      displayName: provider.displayName ?? provider.instanceId,
-      models: provider.models.map((model) => ({
-        id: model.slug,
-        ...(model.name ? { label: model.name } : {}),
-        // Select options only; booleans such as fast mode stay at their defaults.
-        options: (model.capabilities?.optionDescriptors ?? [])
-          .filter((descriptor) => Array.isArray(descriptor.options))
-          .map((descriptor) => {
-            const values = (descriptor.options ?? []).map((option) => option.id);
-            const fallback = (descriptor.options ?? []).find((option) => option.isDefault)?.id;
-            const current = typeof descriptor.currentValue === "string" ? descriptor.currentValue : fallback;
-            return { id: descriptor.id, values, ...(current ? { default: current } : {}) };
-          }),
-      })),
-    }))
-    .filter((provider) => provider.models.length > 0);
 }
 
 function toRequest(threadId: string, item: RawTurnItem): PendingRequest {
@@ -487,7 +652,11 @@ function toRequest(threadId: string, item: RawTurnItem): PendingRequest {
     detail: item.reason ?? null,
     decisions:
       item.options && item.options.length > 0
-        ? item.options.map((option) => ({ decision: option.decision, label: option.label, warning: option.warning ?? null }))
+        ? item.options.map((option) => ({
+            decision: option.decision,
+            label: option.label,
+            warning: option.warning ?? null,
+          }))
         : [
             { decision: "accept", label: "Approve", warning: null },
             { decision: "decline", label: "Decline", warning: null },

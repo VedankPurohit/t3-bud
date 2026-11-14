@@ -22,11 +22,29 @@ over the server's WebSocket API, so it needs no changes to T3 Code.
 ## Design
 
 The mascot is the T3 Tots orb (MIT), redrawn as an SVG with blinks and hops that react to your
-threads. The companion's layout is the **Island** direction: a capsule you can drag anywhere, which opens
-into a popover built from T3 Code's own sidebar, chat, and composer components.
+threads. The companion folds into the **Command bar** direction's mascot with a count badge.
+Hover to reveal thread activity below the mascot, including the latest completion and active work,
+with project and provider icons. Click a thread to open it. The new-thread button opens a compact composer
+with project and model selection. Click the mascot to open the inbox, or drag it to move the companion.
+Keyboard focus also reveals the pill.
 
-[`docs/design/design.html`](docs/design/design.html) is a self-contained gallery of all six
-directions that were explored (Sidebar twin, Split view, Edge drawer, Island, Command bar,
+Unsent messages save locally as you type and return when you reopen a thread, reload, or restart
+the companion. Drafts clear after a successful send. Escape leaves the composer open for dictation;
+use the minimize button or mascot to fold it.
+
+Paste an image with Cmd+V in a new thread or follow-up, or use **Attach images**. Images show a removable
+preview and stay in the draft when you close or restart the companion. PNG, JPEG, GIF, and WebP images
+use T3 Code's upload flow, with a 10 MB limit per image. An image can be sent without text.
+
+Search in the inbox finds threads across shelves, including message matches. Use the project filter
+to narrow the list, or Shift-click projects to select several. Cmd+F focuses search.
+
+Finished runs, failures, and requests needing your attention appear in dark thought bubbles beside the mascot. Reply continues in the companion; Open takes you to T3 Code.
+Bubbles wait while a chat or composer is open.
+Use **Preview notification** in the inbox footer to check their appearance without running an agent.
+
+[`docs/design/design.html`](docs/design/design.html) is a self-contained gallery of the current companion and the six earlier
+directions (Sidebar twin, Split view, Edge drawer, Island, Command bar,
 Notification stack), each screen at real size in light and dark. Open it from disk in any browser.
 Its sources are in `src/renderer/src/design/`; `pnpm design:build` regenerates it.
 

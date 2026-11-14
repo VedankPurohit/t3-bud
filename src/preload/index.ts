@@ -1,6 +1,11 @@
 import { contextBridge, ipcRenderer } from "electron";
 
-import type { CompanionApi, CompanionState, ThreadDetail } from "../shared/types";
+import type {
+  CompanionApi,
+  CompanionState,
+  ThreadDetail,
+  CompanionWindowLayout,
+} from "../shared/types";
 
 const subscribe =
   <T>(channel: string) =>
@@ -13,10 +18,14 @@ const subscribe =
   };
 
 const api: CompanionApi = {
+  searchThreads: (input) => ipcRenderer.invoke("companion:search-threads", input),
   getState: () => ipcRenderer.invoke("companion:get-state"),
   onState: subscribe<CompanionState>("companion:state"),
+  projectIcon: (projectId) => ipcRenderer.invoke("companion:project-icon", projectId),
+  imageUrl: (attachmentId) => ipcRenderer.invoke("companion:image-url", attachmentId),
   connect: (pairing, address) => ipcRenderer.invoke("companion:connect", pairing, address),
   signOut: () => ipcRenderer.invoke("companion:sign-out"),
+  onWindowLayout: subscribe<CompanionWindowLayout>("companion:layout"),
   resize: (size) => ipcRenderer.invoke("companion:resize", size),
   move: (position) => ipcRenderer.invoke("companion:move", position),
   onFoldRequest: subscribe<void>("companion:fold"),
@@ -28,8 +37,10 @@ const api: CompanionApi = {
   },
   openThread: (threadId) => ipcRenderer.invoke("companion:open-thread", threadId),
   onThreadDetail: subscribe<ThreadDetail>("companion:thread-detail"),
-  send: (threadId, message, selection) => ipcRenderer.invoke("companion:send", threadId, message, selection),
-  respond: (threadId, requestId, response) => ipcRenderer.invoke("companion:respond", threadId, requestId, response),
+  send: (threadId, message, selection, images) =>
+    ipcRenderer.invoke("companion:send", threadId, message, selection, images),
+  respond: (threadId, requestId, response) =>
+    ipcRenderer.invoke("companion:respond", threadId, requestId, response),
   launch: (input) => ipcRenderer.invoke("companion:launch", input),
   organize: (threadId, action, snoozedUntil) =>
     ipcRenderer.invoke("companion:organize", threadId, action, snoozedUntil),

@@ -6,7 +6,6 @@ import {
   CircleCheckIcon,
   CircleDashedIcon,
   ClockIcon,
-  FolderCodeIcon,
   ShieldQuestionIcon,
   Undo2Icon,
 } from "lucide-react";
@@ -17,25 +16,26 @@ import { cn } from "../t3/lib/utils";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../t3/ui/menu";
 import { driverOf, useIsland } from "./context";
 import { ProviderGlyph } from "./icons";
+import { ProjectGlyph } from "./project-icon";
+export { ProjectGlyph } from "./project-icon";
 
 /* Rows copied from T3 Code's SidebarThreadRow (card variant), MIT License, with logic replaced. */
 
 export type Shelf = "inbox" | "working" | "snoozed" | "settled";
 
-/** T3's ProjectFavicon falls back to this glyph; the companion fetches no favicons. */
-export function ProjectGlyph({ className }: { className?: string }) {
-  return <FolderCodeIcon aria-hidden className={cn("shrink-0 text-icon-muted", className)} />;
-}
-
 /** `TOP_STATUS_ICONS` and the `topStatus` mapping, cut to the states the shell stream reports. */
 function topStatus(thread: ThreadSummary, shelf: Shelf) {
   if (thread.pendingRequestCount > 0)
     return { label: "Needs you", Icon: ShieldQuestionIcon, className: "text-warning-foreground" };
-  if (shelf === "working" || ["preparing", "queued", "starting", "running", "waiting"].includes(thread.status))
+  if (
+    shelf === "working" ||
+    ["preparing", "queued", "starting", "running", "waiting"].includes(thread.status)
+  )
     return { label: "Working", Icon: CircleDashedIcon, className: "text-info-foreground" };
   if (thread.status === "failed")
     return { label: "Failed", Icon: CircleAlertIcon, className: "text-error-foreground" };
-  if (thread.unread) return { label: "Done", Icon: CircleCheckIcon, className: "text-success-foreground" };
+  if (thread.unread)
+    return { label: "Done", Icon: CircleCheckIcon, className: "text-success-foreground" };
   return null;
 }
 
@@ -57,6 +57,7 @@ const rowAction =
 
 export function ThreadRow(props: {
   thread: ThreadSummary;
+  snippet?: string;
   shelf: Shelf;
   onOpen: () => void;
   onOrganize: (action: OrganizeAction, snoozedUntil?: string) => void;
@@ -88,7 +89,10 @@ export function ThreadRow(props: {
         tabIndex={0}
         onClick={props.onOpen}
         onKeyDown={(event) => {
-          if (event.target === event.currentTarget && (event.key === "Enter" || event.key === " ")) {
+          if (
+            event.target === event.currentTarget &&
+            (event.key === "Enter" || event.key === " ")
+          ) {
             event.preventDefault();
             props.onOpen();
           }
@@ -102,7 +106,10 @@ export function ThreadRow(props: {
       >
         <div className="relative z-10 h-auto px-(--sidebar-row-content-inset) py-(--sidebar-content-inset)">
           <div className="flex h-5 min-w-0 items-center gap-1.5">
-            <ProjectGlyph className={cn("size-4", settled && "opacity-40 grayscale")} />
+            <ProjectGlyph
+              projectId={thread.projectId}
+              className={cn("size-4", settled && "opacity-40 grayscale")}
+            />
             <span className="min-w-0 flex-1 truncate text-xs font-normal text-secondary-label">
               {lookups.projectById.get(thread.projectId)?.title ?? ""}
             </span>
@@ -116,12 +123,20 @@ export function ThreadRow(props: {
                 onKeyDown={(event) => event.stopPropagation()}
               >
                 {shelf === "snoozed" ? (
-                  <button type="button" className={rowAction} onClick={() => props.onOrganize("unsnooze")}>
+                  <button
+                    type="button"
+                    className={rowAction}
+                    onClick={() => props.onOrganize("unsnooze")}
+                  >
                     <AlarmClockOffIcon className="size-3.5" />
                     Wake
                   </button>
                 ) : settled ? (
-                  <button type="button" className={rowAction} onClick={() => props.onOrganize("unsettle")}>
+                  <button
+                    type="button"
+                    className={rowAction}
+                    onClick={() => props.onOrganize("unsettle")}
+                  >
                     <Undo2Icon className="size-3.5" />
                     Un-settle
                   </button>
@@ -133,7 +148,10 @@ export function ThreadRow(props: {
                       </MenuTrigger>
                       <MenuPopup align="end">
                         {SNOOZE_PRESETS.map((preset) => (
-                          <MenuItem key={preset.label} onClick={() => props.onOrganize("snooze", preset.until())}>
+                          <MenuItem
+                            key={preset.label}
+                            onClick={() => props.onOrganize("snooze", preset.until())}
+                          >
                             {preset.label}
                           </MenuItem>
                         ))}
@@ -167,10 +185,16 @@ export function ThreadRow(props: {
             <span aria-hidden className="inline-flex shrink-0 items-center">
               <ProviderGlyph
                 driverKind={driverOf(lookups, thread.providerInstanceId)}
+                instanceId={thread.providerInstanceId}
                 className="size-3.5 opacity-60"
               />
             </span>
           </div>
+          {props.snippet ? (
+            <p className="mt-1 line-clamp-2 text-xs font-normal text-secondary-label">
+              {props.snippet}
+            </p>
+          ) : null}
         </div>
       </div>
     </li>

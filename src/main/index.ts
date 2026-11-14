@@ -1,14 +1,24 @@
 import { BrowserWindow, app, ipcMain, screen, shell } from "electron";
 import { join } from "node:path";
 
-import type { ModelSelection, OrganizeAction, RequestResponse } from "../shared/types";
+import type {
+  ModelSelection,
+  OrganizeAction,
+  RequestResponse,
+  ThreadSearchInput,
+  DraftImage,
+} from "../shared/types";
 import { config } from "./config";
-import { anchorOf, defaultAnchor, islandBounds, type Point } from "./island";
+import { anchorOf, defaultAnchor, islandBounds, windowPlacement, type Point } from "./island";
 import { describeEnvironment } from "./t3/auth";
 import { CompanionStore } from "./store";
 
 /** Where T3 Code's desktop app serves its local environment by default. */
-const LOCAL_CANDIDATES = ["http://127.0.0.1:3773", "http://127.0.0.1:3774", "http://127.0.0.1:3775"];
+const LOCAL_CANDIDATES = [
+  "http://127.0.0.1:3773",
+  "http://127.0.0.1:3774",
+  "http://127.0.0.1:3775",
+];
 
 // Development and test runs can isolate their sign-in and expose DevTools to automation.
 if (process.env.T3_COMPANION_USER_DATA) app.setPath("userData", process.env.T3_COMPANION_USER_DATA);
@@ -18,11 +28,13 @@ if (process.env.T3_COMPANION_DEBUG_PORT) {
 
 let window: BrowserWindow | null = null;
 let quitting = false;
+let mascotX = 46;
+let notificationLayout = false;
 /** The cursor relative to the window, as last sent; cleared to force a fresh send. */
 let lastCursor: Point | null = null;
 
 /** The quiet capsule; the renderer resizes the window to whatever it shows. */
-const INITIAL_SIZE = { width: 160, height: 48 };
+const INITIAL_SIZE = { width: 92, height: 74 };
 /** How often the mascot's eyes check where the cursor is; updates go out only when it moved. */
 const CURSOR_POLL_MS = 33;
 
@@ -32,11 +44,20 @@ const store = new CompanionStore(
 );
 
 const contains = (area: Electron.Rectangle, point: Point) =>
-  point.x >= area.x && point.x <= area.x + area.width && point.y >= area.y && point.y <= area.y + area.height;
+  point.x >= area.x &&
+  point.x <= area.x + area.width &&
+  point.y >= area.y &&
+  point.y <= area.y + area.height;
 
 async function detectLocalServer(): Promise<string | null> {
   for (const candidate of LOCAL_CANDIDATES) {
-    if (await describeEnvironment(candidate).then(() => true, () => false)) return candidate;
+    if (
+      await describeEnvironment(candidate).then(
+        () => true,
+        () => false,
+      )
+    )
+      return candidate;
   }
   return null;
 }
@@ -47,8 +68,14 @@ let anchor: Point = { x: 0, y: 0 };
 const workAreaAt = (point: Point) => screen.getDisplayNearestPoint(point).workArea;
 
 /** Places the window at `size`, hung from the anchor and kept on its display. */
-function place(size: { width: number; height: number }) {
-  window?.setBounds(islandBounds(workAreaAt(anchor), anchor, size));
+function place(size: { width: number; height: number; notification?: boolean }) {
+  const placement = windowPlacement(workAreaAt(anchor), anchor, size);
+  mascotX = placement.mascotX;
+  notificationLayout = size.notification === true;
+  window?.setBounds(placement.bounds);
+  const layout = { width: placement.bounds.width, mascotX };
+  window?.webContents.send("companion:layout", layout);
+  return layout;
 }
 
 function createWindow() {
@@ -68,8 +95,8 @@ function createWindow() {
     skipTaskbar: true,
     alwaysOnTop: true,
     title: "T3 Companion",
-    // A panel floats over full-screen apps and takes keys without activating the app.
-    ...(process.platform === "darwin" ? { type: "panel" as const } : {}),
+    // Nonactivating macOS panels can leave keystrokes in the app behind the composer.
+    acceptFirstMouse: true,
     webPreferences: {
       preload: join(import.meta.dirname, "../preload/index.cjs"),
       contextIsolation: true,
@@ -79,7 +106,10 @@ function createWindow() {
   });
   window.setAlwaysOnTop(true, "floating");
   if (process.platform === "darwin") {
-    window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true, skipTransformProcessType: true });
+    window.setVisibleOnAllWorkspaces(true, {
+      visibleOnFullScreen: true,
+      skipTransformProcessType: true,
+    });
   }
   window.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:/.test(url)) void shell.openExternal(url);
@@ -117,18 +147,19 @@ function createWindow() {
       anchor = defaultAnchor(screen.getPrimaryDisplay().workArea);
     }
     const { width, height } = window.getBounds();
-    place({ width, height });
+    place({ width, height, notification: notificationLayout });
   });
   if (process.env.ELECTRON_RENDERER_URL) void window.loadURL(process.env.ELECTRON_RENDERER_URL);
   else void window.loadFile(join(import.meta.dirname, "../renderer/index.html"));
 }
 
 /** Sizes the window to what the island shows, so nothing invisible blocks clicks underneath. */
-function resize(size: { width: number; height: number; focus: boolean }) {
-  if (!window) return;
-  place(size);
+function resize(size: { width: number; height: number; focus: boolean; notification?: boolean }) {
+  const layout = place(size);
+  if (!window) return layout;
   store.setForeground(size.focus);
   if (size.focus) window.focus();
+  return layout;
 }
 
 const fromCompanion = (event: Electron.IpcMainInvokeEvent) =>
@@ -148,41 +179,57 @@ function registerIpc() {
     });
   };
 
+  handle("companion:search-threads", (input: ThreadSearchInput) => store.searchThreads(input));
   handle("companion:get-state", () => store.state());
-  handle("companion:connect", (pairing: string, address: string | null) => store.pairWith(pairing, address));
+  handle("companion:project-icon", (projectId: string) => store.projectIcon(projectId));
+  handle("companion:image-url", (attachmentId: string) => store.imageUrl(attachmentId));
+  handle("companion:connect", (pairing: string, address: string | null) =>
+    store.pairWith(pairing, address),
+  );
   handle("companion:sign-out", async () => store.signOut(await detectLocalServer()));
-  handle("companion:resize", (size: { width: number; height: number; focus: boolean }) => resize(size));
+  handle(
+    "companion:resize",
+    (size: { width: number; height: number; focus: boolean; notification?: boolean }) =>
+      resize(size),
+  );
   handle("companion:move", (position: { x: number; y: number; settled: boolean }) => {
     if (!window) return;
     const { width, height } = window.getBounds();
     const next = { x: Math.round(position.x), y: Math.round(position.y), width, height };
-    anchor = anchorOf(next);
+    anchor = anchorOf(next, mascotX);
     if (!position.settled) {
       window.setBounds(next);
       return;
     }
     // A drop near an edge settles fully on screen; that settled spot becomes the anchor.
-    const settled = islandBounds(workAreaAt(anchor), anchor, { width, height });
-    window.setBounds(settled);
-    anchor = anchorOf(settled);
+    const settled = place({ width, height, notification: notificationLayout });
+    anchor = anchorOf(window.getBounds(), settled.mascotX);
     config.saveAnchor(anchor);
   });
   handle("companion:open-thread", (threadId: string | null) => store.openThread(threadId));
-  handle("companion:send", (threadId: string, message: string, selection: ModelSelection | null) =>
-    store.send(threadId, message, selection),
+  handle(
+    "companion:send",
+    (
+      threadId: string,
+      message: string,
+      selection: ModelSelection | null,
+      images?: readonly DraftImage[],
+    ) => store.send(threadId, message, selection, images),
   );
   handle("companion:respond", (threadId: string, requestId: string, response: RequestResponse) =>
     store.respond(threadId, requestId, response),
   );
   handle(
     "companion:launch",
-    (input: { projectId: string; message: string; modelSelection: ModelSelection | null }) =>
-      store.launch(input),
+    (input: {
+      projectId: string;
+      message: string;
+      modelSelection: ModelSelection | null;
+      images?: readonly DraftImage[];
+    }) => store.launch(input),
   );
-  handle(
-    "companion:organize",
-    (threadId: string, action: OrganizeAction, snoozedUntil?: string) =>
-      store.organize(threadId, action, snoozedUntil),
+  handle("companion:organize", (threadId: string, action: OrganizeAction, snoozedUntil?: string) =>
+    store.organize(threadId, action, snoozedUntil),
   );
   handle("companion:interrupt", (threadId: string) => store.interrupt(threadId));
   handle("companion:open-in-t3", async (threadId: string | null) => {

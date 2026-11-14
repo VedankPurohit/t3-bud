@@ -40,6 +40,8 @@ describe("buildSections", () => {
     );
     expect(sections.inbox.map((entry) => entry.threadId)).toEqual(["failed", "unread", "quiet", "woken"]);
     expect(sections.working.map((entry) => [entry.threadId, entry.pendingRequestCount])).toEqual([["running", 1]]);
+    expect(sections.working[0]?.pendingRequestKey).toBe("r");
+    expect(sections.inbox.find((entry) => entry.threadId === "unread")?.latestRunCompletedAt).toBe("2026-11-13T09:00:00Z");
     expect(sections.snoozed.map((entry) => entry.threadId)).toEqual(["asleep"]);
     expect(sections.settled.map((entry) => entry.threadId)).toEqual(["done"]);
   });
