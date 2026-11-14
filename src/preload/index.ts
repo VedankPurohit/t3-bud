@@ -1,3 +1,4 @@
+/// <reference lib="dom" />
 import { contextBridge, ipcRenderer } from "electron";
 
 import type {
@@ -17,7 +18,16 @@ const subscribe =
     };
   };
 
+// Native cursor coordinates can arrive before Chromium adopts a new viewport size.
+// Request a fresh sample once the renderer has caught up with the native resize.
+window.addEventListener("resize", () => ipcRenderer.send("companion:cursor-sync"));
+
 const api: CompanionApi = {
+  togglePanel: () => ipcRenderer.invoke("companion:toggle-panel"),
+  onToggleRequest: subscribe<void>("companion:toggle"),
+  onRevealRequest: subscribe<boolean>("companion:reveal"),
+  getExpanded: () => ipcRenderer.invoke("companion:get-expanded"),
+  onExpandedChange: subscribe<boolean>("companion:expanded"),
   searchThreads: (input) => ipcRenderer.invoke("companion:search-threads", input),
   getState: () => ipcRenderer.invoke("companion:get-state"),
   onState: subscribe<CompanionState>("companion:state"),
@@ -30,7 +40,13 @@ const api: CompanionApi = {
   move: (position) => ipcRenderer.invoke("companion:move", position),
   onFoldRequest: subscribe<void>("companion:fold"),
   onCursor: (listener) => {
-    const unsubscribe = subscribe<{ x: number; y: number }>("companion:cursor")(listener);
+    const unsubscribe = subscribe<{
+      x: number; y: number; width: number; height: number; overMascot: boolean;
+    }>(
+      "companion:cursor",
+    )((point) => {
+      if (point.width === window.innerWidth && point.height === window.innerHeight) listener(point);
+    });
     // A new listener needs the current position even while the cursor stands still.
     ipcRenderer.send("companion:cursor-sync");
     return unsubscribe;

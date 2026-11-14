@@ -62,10 +62,10 @@ export function App() {
   const noticeVisible = Boolean(notice) && mode.kind === "folded";
   const noticeClosing = notice?.id === closingNoticeId;
 
-  const working = state?.working ?? [];
   const controls = controlsSize(state ? selectHoverThreads(state).length : 0);
   const revealed = mode.kind === "folded" && mode.revealed === true;
-  const size =
+  const panelAbove = windowLayout?.panelAbove === true;
+  const baseSize =
     mode.kind === "open"
       ? POPOVER_SIZE
       : mode.kind === "quick"
@@ -84,20 +84,29 @@ export function App() {
                 width: FOLDED_SIZE.width + SHADOW_MARGIN.x,
                 height: FOLDED_SIZE.height + SHADOW_MARGIN.y,
               };
+  const size = {
+    ...baseSize,
+    height: baseSize.height + (panelAbove && !noticeVisible &&
+      (mode.kind !== "folded" || hoverSpace) ? SHADOW_MARGIN.y : 0),
+  };
   const focus = mode.kind === "open" || mode.kind === "quick";
+  const hoverLayout = mode.kind === "folded" && !noticeVisible;
+  const panelVisible = focus || noticeVisible || hoverSpace;
 
   // Keep room for the pill until its exit transition finishes, then release the transparent area.
   useLayoutEffect(() => {
     let current = true;
     void api()
-      .resize({ ...size, focus, notification: noticeVisible })
+      .resize({
+        ...size, focus, notification: noticeVisible, hover: hoverLayout, visible: panelVisible,
+      })
       .then((layout) => {
         if (current && layout) setWindowLayout(layout);
       });
     return () => {
       current = false;
     };
-  }, [size.width, size.height, focus, noticeVisible]);
+  }, [size.width, size.height, focus, noticeVisible, hoverLayout, panelVisible]);
 
   // Native dragging and display changes can flip the thought bubble to the other side.
   useEffect(() => api().onWindowLayout?.(setWindowLayout), []);
@@ -107,6 +116,20 @@ export function App() {
       : noticeVisible
         ? size.width - 46
         : size.width / 2;
+  const mascotY = windowLayout?.width === size.width ? (windowLayout.mascotY ?? 0) : 0;
+  const insets = windowLayout?.anchorInsets;
+  // The content window positions its panels around the anchor of the separate mascot window.
+  const anchorX = !noticeVisible
+    ? insets
+      ? `clamp(calc(100vw - ${insets.right}px), 50vw, ${insets.left}px)`
+      : "50vw"
+    : `${mascotX}px`;
+  const preferredY = windowLayout?.panelAbove ? "calc(100vh - 74px)" : "0px";
+  const anchorY = !noticeVisible
+    ? insets
+      ? `clamp(calc(100vh - ${insets.bottom}px), ${preferredY}, ${insets.top}px)`
+      : "0px"
+    : `${mascotY}px`;
 
   const reveal = (next: boolean) => {
     if (mode.kind !== "folded") return;
@@ -117,6 +140,14 @@ export function App() {
         : current,
     );
   };
+
+  const revealFromNative = useEffectEvent(reveal);
+  const toggleFromNative = useEffectEvent(() => {
+    if (mode.kind === "open" || mode.kind === "quick") fold();
+    else void open();
+  });
+  useEffect(() => api().onRevealRequest(revealFromNative), []);
+  useEffect(() => api().onToggleRequest(toggleFromNative), []);
 
   // Compare run completions, not unread state; a thread can finish repeatedly without a visit.
   useEffect(() => {
@@ -209,7 +240,20 @@ export function App() {
     <IslandContext value={lookups}>
       <div
         className="relative size-full"
-        style={{ "--companion-anchor-x": `${mascotX}px` } as CSSProperties}
+        style={
+          {
+            "--companion-anchor-x": anchorX,
+            "--companion-anchor-y": anchorY,
+            "--companion-panel-top": panelAbove ? "12px" : `calc(${anchorY} + 72px)`,
+            "--companion-panel-bottom": panelAbove ? `calc(100vh - ${anchorY} + 12px)` : "12px",
+            "--companion-controls-y": !noticeVisible && panelAbove
+              ? `calc(${anchorY} - ${controls.height - FOLDED_SIZE.height}px)`
+              : `calc(${anchorY} + 68px)`,
+            "--companion-bridge-y": !noticeVisible && panelAbove
+              ? `calc(${anchorY} - 8px)`
+              : `calc(${anchorY} + 60px)`,
+          } as CSSProperties
+        }
       >
         {mode.kind === "open" ? (
           !connected ? (
@@ -261,6 +305,7 @@ export function App() {
         {mode.kind === "quick" ? (
           <NewThreadScreen
             compact
+            above={panelAbove}
             onContentHeightChange={setQuickHeight}
             onPickerOpenChange={(pickerOpen) =>
               setMode((current) =>
@@ -275,28 +320,21 @@ export function App() {
         ) : null}
         <IslandCapsule
           mood={mood}
-          working={working}
-          folded={mode.kind === "folded"}
-          expanded={mode.kind === "open" || mode.kind === "quick"}
           revealed={revealed && !noticeVisible}
           space={hoverSpace && !noticeVisible}
-          onRevealChange={reveal}
           onPillHidden={() => {
             if (mode.kind === "folded" && !revealed) setHoverSpace(false);
           }}
           onOpenThread={(threadId) => void open({ kind: "thread", threadId })}
           onOpenInbox={() => void open({ kind: "inbox" })}
           onNewThread={() => (connected ? setMode({ kind: "quick" }) : void open())}
-          onClick={() => {
-            if (mode.kind === "open" || mode.kind === "quick") fold();
-            else void open();
-          }}
         />
         {notice && noticeVisible ? (
           <NotificationCard
             key={notice.id}
             notice={notice}
             remaining={notices.length - 1}
+            mascotY={mascotY}
             closing={noticeClosing}
             side={mascotX > size.width / 2 ? "left" : "right"}
             onPauseChange={setNoticePaused}

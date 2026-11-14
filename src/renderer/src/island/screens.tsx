@@ -40,7 +40,7 @@ export function PopoverPanel(props: { surface: "sidebar" | "chat"; children: Rea
   return (
     <div
       {...(props.surface === "sidebar" ? { "data-app-sidebar": true } : {})}
-      style={{ top: PANEL_TOP }}
+      style={{ top: `var(--companion-panel-top, ${PANEL_TOP}px)`, bottom: "var(--companion-panel-bottom, 12px)" }}
       className={cn(
         "panel-in absolute inset-x-2.5 bottom-3 flex flex-col overflow-hidden rounded-2xl border shadow-[0_16px_40px_-18px_rgb(0_0_0/55%)] dark:shadow-[0_18px_44px_-18px_rgb(0_0_0/80%)]",
         props.surface === "sidebar"
@@ -473,6 +473,7 @@ const comboboxItem =
 
 export function NewThreadScreen(props: {
   compact?: boolean;
+  above?: boolean;
   onPickerOpenChange?: (open: boolean) => void;
   onContentHeightChange?: (height: number) => void;
   onBack: () => void;
@@ -616,7 +617,7 @@ export function NewThreadScreen(props: {
         </>
       )}
       <Composer
-        pickerPlacement={props.compact ? "below" : "above"}
+        pickerPlacement={props.compact && !props.above ? "below" : "above"}
         onPickerOpenChange={props.onPickerOpenChange}
         key={`${state.environmentId}:new-thread`}
         draftKey={JSON.stringify([state.environmentId, "new-thread"])}
@@ -655,7 +656,9 @@ export function NewThreadScreen(props: {
     <div
       ref={quickPanel}
       className="quick-thread panel-in absolute inset-x-2.5 rounded-2xl border border-border bg-background text-foreground shadow-[0_10px_28px_-12px_rgb(0_0_0/65%)]"
-      style={{ top: PANEL_TOP }}
+      style={props.above
+        ? { bottom: "var(--companion-panel-bottom, 12px)" }
+        : { top: `var(--companion-panel-top, ${PANEL_TOP}px)` }}
     >
       {contents}
     </div>

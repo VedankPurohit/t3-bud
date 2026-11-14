@@ -7,11 +7,13 @@ import type {
   RequestResponse,
   ThreadSearchInput,
   DraftImage,
+  CompanionApi,
 } from "../shared/types";
 import { config } from "./config";
 import { anchorOf, defaultAnchor, islandBounds, windowPlacement, type Point } from "./island";
 import { describeEnvironment } from "./t3/auth";
 import { CompanionStore } from "./store";
+import { productName } from "../../package.json";
 
 /** Where T3 Code's desktop app serves its local environment by default. */
 const LOCAL_CANDIDATES = [
@@ -27,11 +29,13 @@ if (process.env.T3_COMPANION_DEBUG_PORT) {
 }
 
 let window: BrowserWindow | null = null;
+let mascotWindow: BrowserWindow | null = null;
+let expanded = false;
+let lastSize = { width: 92, height: 74, notification: false, hover: true };
+const lastCursors = new Map<BrowserWindow, Point>();
 let quitting = false;
-let mascotX = 46;
 let notificationLayout = false;
-/** The cursor relative to the window, as last sent; cleared to force a fresh send. */
-let lastCursor: Point | null = null;
+let hoverLayout = true;
 
 /** The quiet capsule; the renderer resizes the window to whatever it shows. */
 const INITIAL_SIZE = { width: 92, height: 74 };
@@ -39,7 +43,10 @@ const INITIAL_SIZE = { width: 92, height: 74 };
 const CURSOR_POLL_MS = 33;
 
 const store = new CompanionStore(
-  (state) => window?.webContents.send("companion:state", state),
+  (state) => {
+    window?.webContents.send("companion:state", state);
+    mascotWindow?.webContents.send("companion:state", state);
+  },
   (detail) => window?.webContents.send("companion:thread-detail", detail),
 );
 
@@ -68,20 +75,25 @@ let anchor: Point = { x: 0, y: 0 };
 const workAreaAt = (point: Point) => screen.getDisplayNearestPoint(point).workArea;
 
 /** Places the window at `size`, hung from the anchor and kept on its display. */
-function place(size: { width: number; height: number; notification?: boolean }) {
+function place(size: { width: number; height: number; notification?: boolean; hover?: boolean }) {
   const placement = windowPlacement(workAreaAt(anchor), anchor, size);
-  mascotX = placement.mascotX;
+  const { mascotX, mascotY } = placement;
   notificationLayout = size.notification === true;
+  hoverLayout = size.hover === true;
   window?.setBounds(placement.bounds);
-  const layout = { width: placement.bounds.width, mascotX };
+  const layout = {
+    width: placement.bounds.width,
+    mascotX,
+    mascotY,
+    anchorInsets: placement.anchorInsets,
+    panelAbove: placement.panelAbove,
+  };
   window?.webContents.send("companion:layout", layout);
   return layout;
 }
 
-function createWindow() {
-  anchor = config.anchor() ?? defaultAnchor(screen.getPrimaryDisplay().workArea);
-  const bounds = islandBounds(workAreaAt(anchor), anchor, INITIAL_SIZE);
-  window = new BrowserWindow({
+function createSurface(bounds: Electron.Rectangle, mascot: boolean) {
+  const surface = new BrowserWindow({
     ...bounds,
     show: false,
     frame: false,
@@ -94,8 +106,7 @@ function createWindow() {
     fullscreenable: false,
     skipTaskbar: true,
     alwaysOnTop: true,
-    title: "T3 Companion",
-    // Nonactivating macOS panels can leave keystrokes in the app behind the composer.
+    title: mascot ? `${productName} mascot` : productName,
     acceptFirstMouse: true,
     webPreferences: {
       preload: join(import.meta.dirname, "../preload/index.cjs"),
@@ -104,70 +115,143 @@ function createWindow() {
       sandbox: true,
     },
   });
-  window.setAlwaysOnTop(true, "floating");
+  // Keep the mascot clickable even when a focused panel overlaps its transparent margin.
+  surface.setAlwaysOnTop(true, "floating", mascot ? 1 : 0);
   if (process.platform === "darwin") {
-    window.setVisibleOnAllWorkspaces(true, {
+    surface.setVisibleOnAllWorkspaces(true, {
       visibleOnFullScreen: true,
       skipTransformProcessType: true,
     });
   }
-  window.webContents.setWindowOpenHandler(({ url }) => {
+  surface.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:/.test(url)) void shell.openExternal(url);
     return { action: "deny" };
   });
-  window.webContents.on("will-navigate", (event, url) => {
-    if (url !== window?.webContents.getURL()) event.preventDefault();
+  surface.webContents.on("will-navigate", (event, url) => {
+    if (url !== surface.webContents.getURL()) event.preventDefault();
   });
-  window.once("ready-to-show", () => window?.showInactive());
-  // Cmd+W and window-close shortcuts fold the island instead of closing it; only Quit ends the app.
-  window.on("close", (event) => {
+  surface.on("close", (event) => {
     if (quitting) return;
     event.preventDefault();
     window?.webContents.send("companion:fold");
   });
-  // Electron has no global mouse-move event, so the mascot's gaze polls the cursor instead.
-  // Compared relative to the window, so moving or resizing the island re-aims the eyes too.
-  const cursorTimer = setInterval(() => {
-    if (!window?.isVisible()) return;
-    const point = screen.getCursorScreenPoint();
-    const bounds = window.getBounds();
-    const relative = { x: point.x - bounds.x, y: point.y - bounds.y };
-    if (lastCursor && relative.x === lastCursor.x && relative.y === lastCursor.y) return;
-    lastCursor = relative;
-    window.webContents.send("companion:cursor", relative);
-  }, CURSOR_POLL_MS);
-  window.on("closed", () => {
-    clearInterval(cursorTimer);
-    window = null;
+  surface.on("closed", () => {
+    lastCursors.delete(surface);
+    if (mascot) mascotWindow = null;
+    else window = null;
   });
-  // Re-center when displays or the Dock change the work area.
+  if (mascot) surface.once("ready-to-show", () => surface.showInactive());
+  const query: Record<string, string> = mascot ? { surface: "mascot" } : {};
+  if (process.env.ELECTRON_RENDERER_URL) {
+    const url = new URL(process.env.ELECTRON_RENDERER_URL);
+    if (mascot) url.searchParams.set("surface", "mascot");
+    void surface.loadURL(url.href);
+  } else {
+    void surface.loadFile(join(import.meta.dirname, "../renderer/index.html"), { query });
+  }
+  return surface;
+}
+
+function moveMascot() {
+  // Panel size changes never touch this window's bounds.
+  mascotWindow?.setPosition(Math.round(anchor.x - INITIAL_SIZE.width / 2), Math.round(anchor.y));
+}
+
+function createWindow() {
+  const saved = config.anchor() ?? defaultAnchor(screen.getPrimaryDisplay().workArea);
+  const bounds = islandBounds(workAreaAt(saved), saved, INITIAL_SIZE);
+  anchor = anchorOf(bounds);
+  window = createSurface(bounds, false);
+  mascotWindow = createSurface(bounds, true);
+  let revealed = false;
+  let concealTimer: ReturnType<typeof setTimeout> | undefined;
+  const reveal = (next: boolean) => {
+    if (revealed === next) return;
+    revealed = next;
+    window?.webContents.send("companion:reveal", next);
+  };
+  const cursorTimer = setInterval(() => {
+    if (!mascotWindow?.isVisible()) return;
+    const point = screen.getCursorScreenPoint();
+    for (const surface of [mascotWindow, window]) {
+      if (!surface?.isVisible()) continue;
+      const bounds = surface.getBounds();
+      const relative = { x: point.x - bounds.x, y: point.y - bounds.y };
+      const last = lastCursors.get(surface);
+      if (!last || relative.x !== last.x || relative.y !== last.y) {
+        lastCursors.set(surface, relative);
+        surface.webContents.send("companion:cursor", {
+          ...relative, width: bounds.width, height: bounds.height,
+          overMascot: contains(mascotWindow.getBounds(), point),
+        });
+      }
+    }
+    if (expanded || notificationLayout) {
+      clearTimeout(concealTimer);
+      concealTimer = undefined;
+      reveal(false);
+      return;
+    }
+    const inside = contains(mascotWindow.getBounds(), point) ||
+      Boolean(window?.isVisible() && hoverLayout && contains(window.getBounds(), point));
+    if (inside) {
+      clearTimeout(concealTimer);
+      concealTimer = undefined;
+      reveal(true);
+    } else if (revealed && concealTimer === undefined) {
+      concealTimer = setTimeout(() => {
+        concealTimer = undefined;
+        reveal(false);
+      }, 90);
+    }
+  }, CURSOR_POLL_MS);
+  app.once("before-quit", () => {
+    clearInterval(cursorTimer);
+    clearTimeout(concealTimer);
+  });
   screen.on("display-metrics-changed", () => {
-    if (!window) return;
+    if (!window || !mascotWindow) return;
     if (!screen.getAllDisplays().some((display) => contains(display.workArea, anchor))) {
       anchor = defaultAnchor(screen.getPrimaryDisplay().workArea);
     }
-    const { width, height } = window.getBounds();
-    place({ width, height, notification: notificationLayout });
+    anchor = anchorOf(islandBounds(workAreaAt(anchor), anchor, INITIAL_SIZE));
+    moveMascot();
+    place(lastSize);
   });
-  if (process.env.ELECTRON_RENDERER_URL) void window.loadURL(process.env.ELECTRON_RENDERER_URL);
-  else void window.loadFile(join(import.meta.dirname, "../renderer/index.html"));
 }
 
-/** Sizes the window to what the island shows, so nothing invisible blocks clicks underneath. */
-function resize(size: { width: number; height: number; focus: boolean; notification?: boolean }) {
-  const layout = place(size);
-  if (!window) return layout;
+/** Resize or hide the content window. The mascot window stays at its saved screen anchor. */
+function resize(size: Parameters<CompanionApi["resize"]>[0]) {
+  expanded = size.focus;
+  mascotWindow?.webContents.send("companion:expanded", expanded);
   store.setForeground(size.focus);
-  if (size.focus) window.focus();
+  if (size.visible === false) {
+    lastSize = { ...INITIAL_SIZE, notification: false, hover: true };
+    notificationLayout = false;
+    hoverLayout = true;
+    window?.hide();
+    const bounds = window?.getBounds() ?? INITIAL_SIZE;
+    return place({ ...bounds, notification: false, hover: true });
+  }
+  lastSize = { ...size, notification: size.notification === true, hover: size.hover === true };
+  const layout = place(size);
+  if (size.focus) {
+    window?.show();
+    window?.focus();
+  } else {
+    window?.showInactive();
+  }
   return layout;
 }
 
 const fromCompanion = (event: Electron.IpcMainInvokeEvent) =>
-  window !== null && event.sender === window.webContents;
+  [window, mascotWindow].some((surface) => surface !== null && event.sender === surface.webContents);
 
 function registerIpc() {
   ipcMain.on("companion:cursor-sync", (event) => {
-    if (window !== null && event.sender === window.webContents) lastCursor = null;
+    for (const surface of [window, mascotWindow]) {
+      if (surface && event.sender === surface.webContents) lastCursors.delete(surface);
+    }
   });
   const handle = <A extends unknown[], R>(
     channel: string,
@@ -179,6 +263,8 @@ function registerIpc() {
     });
   };
 
+  handle("companion:toggle-panel", () => window?.webContents.send("companion:toggle"));
+  handle("companion:get-expanded", () => expanded);
   handle("companion:search-threads", (input: ThreadSearchInput) => store.searchThreads(input));
   handle("companion:get-state", () => store.state());
   handle("companion:project-icon", (projectId: string) => store.projectIcon(projectId));
@@ -189,22 +275,22 @@ function registerIpc() {
   handle("companion:sign-out", async () => store.signOut(await detectLocalServer()));
   handle(
     "companion:resize",
-    (size: { width: number; height: number; focus: boolean; notification?: boolean }) =>
+    (size: Parameters<CompanionApi["resize"]>[0]) =>
       resize(size),
   );
   handle("companion:move", (position: { x: number; y: number; settled: boolean }) => {
-    if (!window) return;
-    const { width, height } = window.getBounds();
-    const next = { x: Math.round(position.x), y: Math.round(position.y), width, height };
-    anchor = anchorOf(next, mascotX);
-    if (!position.settled) {
-      window.setBounds(next);
-      return;
+    if (!mascotWindow) return;
+    anchor = { x: Math.round(position.x), y: Math.round(position.y) };
+    if (position.settled) {
+      anchor = anchorOf(islandBounds(workAreaAt(anchor), anchor, INITIAL_SIZE));
+      config.saveAnchor(anchor);
     }
-    // A drop near an edge settles fully on screen; that settled spot becomes the anchor.
-    const settled = place({ width, height, notification: notificationLayout });
-    anchor = anchorOf(window.getBounds(), settled.mascotX);
-    config.saveAnchor(anchor);
+    moveMascot();
+    if (window?.isVisible()) place(lastSize);
+    else {
+      // Update the hidden renderer's edge constraints before the next hover or click.
+      place({ ...INITIAL_SIZE, hover: true });
+    }
   });
   handle("companion:open-thread", (threadId: string | null) => store.openThread(threadId));
   handle(
@@ -252,7 +338,7 @@ function registerIpc() {
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
-  app.on("second-instance", () => window?.showInactive());
+  app.on("second-instance", () => mascotWindow?.showInactive());
   void app.whenReady().then(async () => {
     // An accessory app: no Dock icon or menu bar, just the floating companion.
     if (process.platform === "darwin") app.dock?.hide();

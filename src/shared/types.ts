@@ -234,9 +234,23 @@ export type OrganizeAction = "settle" | "unsettle" | "snooze" | "unsnooze" | "ma
 export interface CompanionWindowLayout {
   readonly width: number;
   readonly mascotX: number;
+  readonly mascotY: number;
+  readonly anchorInsets?: {
+    readonly left: number;
+    readonly right: number;
+    readonly top: number;
+    readonly bottom: number;
+  };
+  readonly panelAbove?: boolean;
 }
 
 export interface CompanionApi {
+  /** The mascot has its own fixed-size window; panels are controlled by the other renderer. */
+  togglePanel(): Promise<void>;
+  onToggleRequest(listener: () => void): () => void;
+  onRevealRequest(listener: (revealed: boolean) => void): () => void;
+  getExpanded(): Promise<boolean>;
+  onExpandedChange(listener: (expanded: boolean) => void): () => void;
   getState(): Promise<CompanionState>;
   onState(listener: (state: CompanionState) => void): () => void;
   /** Pairs with a link from T3 Code, or a bare code plus the address it belongs to. */
@@ -248,14 +262,16 @@ export interface CompanionApi {
     height: number;
     focus: boolean;
     notification?: boolean;
+    hover?: boolean;
+    visible?: boolean;
   }): Promise<CompanionWindowLayout>;
   onWindowLayout(listener: (layout: CompanionWindowLayout) => void): () => void;
-  /** Moves the window while the capsule is dragged; `settled` ends the drag and saves the spot. */
+  /** Moves the mascot's screen anchor; `settled` ends the drag and saves the spot. */
   move(position: { x: number; y: number; settled: boolean }): Promise<void>;
   /** The window was asked to close (Cmd+W); the island folds instead. */
   onFoldRequest(listener: () => void): () => void;
   /** The cursor, relative to the window's top-left, whenever it moves anywhere on screen. */
-  onCursor(listener: (point: { x: number; y: number }) => void): () => void;
+  onCursor(listener: (point: { x: number; y: number; overMascot?: boolean }) => void): () => void;
   searchThreads(input: ThreadSearchInput): Promise<ThreadSearchResult>;
   projectIcon(projectId: string): Promise<string | null>;
   imageUrl(attachmentId: string): Promise<string | null>;

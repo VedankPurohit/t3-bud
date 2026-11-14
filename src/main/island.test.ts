@@ -5,6 +5,49 @@ import { anchorOf, defaultAnchor, islandBounds, windowPlacement } from "./island
 const workArea = { x: 0, y: 25, width: 1440, height: 875 };
 
 describe("island geometry", () => {
+  it("preserves the screen anchor through full panel, composer, picker, and notification transitions", () => {
+    for (const x of [46, 720, 1394]) {
+      for (const y of [31, 450, 826]) {
+        const anchor = { x, y };
+        for (const size of [
+          { width: 92, height: 74 },
+          { width: 316, height: 225, hover: true },
+          { width: 390, height: 554 },
+          { width: 380, height: 222 },
+          { width: 420, height: 486 },
+          { width: 404, height: 142, notification: true },
+          { width: 92, height: 74 },
+        ]) {
+          const placement = windowPlacement(workArea, anchor, size);
+          expect(anchorOf(placement.bounds, placement.mascotX, placement.mascotY)).toEqual(anchor);
+        }
+      }
+    }
+  });
+
+  it("keeps the mascot under a stationary pointer through hover resizes at screen edges", () => {
+    for (const area of [workArea, { x: -1920, y: -1080, width: 1920, height: 1080 }]) {
+      for (const x of [area.x + 46, area.x + area.width / 2, area.x + area.width - 46]) {
+        for (const y of [area.y + 6, area.y + 300, area.y + area.height - 74]) {
+          const anchor = { x, y };
+          for (const size of [
+            { width: 92, height: 74 },
+            { width: 316, height: 190 },
+            { width: 316, height: 225 },
+            { width: 92, height: 74 },
+          ]) {
+            const placement = windowPlacement(area, anchor, { ...size, hover: true });
+            expect(anchorOf(placement.bounds, placement.mascotX, placement.mascotY)).toEqual(anchor);
+            expect(placement.bounds.x).toBeGreaterThanOrEqual(area.x);
+            expect(placement.bounds.y).toBeGreaterThanOrEqual(area.y);
+            expect(placement.bounds.x + placement.bounds.width).toBeLessThanOrEqual(area.x + area.width);
+            expect(placement.bounds.y + placement.bounds.height).toBeLessThanOrEqual(area.y + area.height);
+          }
+        }
+      }
+    }
+  });
+
   it("starts top-center and grows downward from the same capsule position", () => {
     const anchor = defaultAnchor(workArea);
     expect(islandBounds(workArea, anchor, { width: 256, height: 48 })).toEqual({
@@ -30,7 +73,9 @@ describe("island geometry", () => {
       { width: 404, height: 142, notification: true },
     );
     expect(bubble.bounds.x + bubble.mascotX).toBe(720);
-    expect(anchorOf(bubble.bounds, bubble.mascotX)).toEqual({ x: 720, y: 100 });
+    expect(bubble.mascotY).toBe(24);
+    expect(bubble.bounds.y).toBe(76);
+    expect(anchorOf(bubble.bounds, bubble.mascotX, bubble.mascotY)).toEqual({ x: 720, y: 100 });
     expect(islandBounds(workArea, anchorOf(folded), { width: 420, height: 560 })).toMatchObject({
       x: 90,
       y: 340,
@@ -38,6 +83,13 @@ describe("island geometry", () => {
   });
 
   it("shifts to stay on screen near an edge", () => {
+    const top = windowPlacement(workArea, defaultAnchor(workArea), {
+      width: 404,
+      height: 142,
+      notification: true,
+    });
+    expect(top.bounds.y).toBe(workArea.y);
+    expect(top.bounds.y + top.mascotY).toBe(defaultAnchor(workArea).y);
     for (const x of [50, 1390]) {
       const bubble = windowPlacement(
         workArea,

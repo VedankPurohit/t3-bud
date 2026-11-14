@@ -28,18 +28,14 @@ html #root {
 
 .companion-dock {
   position: absolute;
-  top: 0;
-  left: var(--companion-anchor-x, 50%);
-  width: 300px;
-  height: 176px;
-  transform: translateX(-50%);
+  inset: 0;
   pointer-events: none;
   z-index: 30;
 }
 .companion-orb {
   position: absolute;
-  top: 0;
-  left: 50%;
+  top: var(--companion-anchor-y, 0px);
+  left: var(--companion-anchor-x, 50%);
   width: 76px;
   height: 60px;
   display: flex;
@@ -60,8 +56,8 @@ html #root {
 }
 .companion-hover-bridge {
   position: absolute;
-  top: 60px;
-  left: 50%;
+  top: var(--companion-bridge-y, 60px);
+  left: var(--companion-anchor-x, 50%);
   width: 76px;
   height: 8px;
   transform: translateX(-50%);
@@ -69,8 +65,8 @@ html #root {
 }
 .companion-controls {
   position: absolute;
-  top: 68px;
-  left: 0;
+  top: var(--companion-controls-y, 68px);
+  left: clamp(8px, calc(var(--companion-anchor-x, 50vw) - 150px), calc(100vw - 308px));
   display: flex;
   align-items: center;
   width: 300px;

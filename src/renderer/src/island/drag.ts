@@ -6,7 +6,7 @@ interface DragState {
   readonly pointerId: number;
   readonly startX: number;
   readonly startY: number;
-  /** Where the pointer grabbed the window, so the window follows without jumping. */
+  /** Pointer offset from the mascot's top-center, independent of the native window size. */
   readonly offsetX: number;
   readonly offsetY: number;
   moved: boolean;
@@ -24,12 +24,13 @@ export function useIslandDrag(onClick: () => void) {
     onPointerDown(event: ReactPointerEvent<HTMLElement>) {
       if (event.button !== 0 || (event.target as HTMLElement).closest("button")) return;
       event.currentTarget.setPointerCapture(event.pointerId);
+      const bounds = event.currentTarget.getBoundingClientRect();
       drag.current = {
         pointerId: event.pointerId,
         startX: event.screenX,
         startY: event.screenY,
-        offsetX: event.screenX - window.screenX,
-        offsetY: event.screenY - window.screenY,
+        offsetX: event.clientX - (bounds.left + bounds.width / 2),
+        offsetY: event.clientY - bounds.top,
         moved: false,
         frame: null,
         next: null,
@@ -69,6 +70,11 @@ export function useIslandDrag(onClick: () => void) {
       });
     },
     onPointerCancel() {
+      const current = drag.current;
+      if (!current) return;
+      if (current.frame !== null) cancelAnimationFrame(current.frame);
+      if (current.moved && current.next)
+        void window.companion.move({ ...current.next, settled: true });
       drag.current = null;
     },
   };

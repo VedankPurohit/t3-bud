@@ -18,7 +18,10 @@ import "./notification.css";
 export const NOTICE_SIZE = { width: 280, height: 128 } as const;
 export const NOTICE_WINDOW = { width: 404, height: 142 } as const;
 
-function ThoughtCloud() {
+function ThoughtCloud({ mascotY = 0 }: { mascotY?: number }) {
+  const targetY = mascotY + 30 - 2;
+  const bigY = 65 + (targetY - 65) * (12 / 38);
+  const smallY = 65 + (targetY - 65) * (28 / 38);
   return (
     <svg
       className="companion-notice-cloud"
@@ -34,8 +37,8 @@ function ThoughtCloud() {
         height="110"
         rx="26"
       />
-      <ellipse className="companion-notice-thought" cx="290" cy="43" rx="7" ry="6" />
-      <circle className="companion-notice-thought" cx="306" cy="34" r="3.5" />
+      <ellipse className="companion-notice-thought" cx="290" cy={bigY} rx="7" ry="6" />
+      <circle className="companion-notice-thought" cx="306" cy={smallY} r="3.5" />
     </svg>
   );
 }
@@ -43,6 +46,7 @@ function ThoughtCloud() {
 export function NotificationCard(props: {
   notice: ThreadNotice;
   remaining: number;
+  mascotY?: number;
   closing: boolean;
   side?: "left" | "right";
   onPauseChange: (paused: boolean) => void;
@@ -82,9 +86,8 @@ export function NotificationCard(props: {
     paused.current = value;
     props.onPauseChange(value);
   };
-  const trackCursor = useEffectEvent((cursor: { x: number; y: number }) => {
+  const trackCursor = useEffectEvent((cursor: { x: number; y: number; overMascot?: boolean }) => {
     const rect = root.current?.getBoundingClientRect();
-    const orb = document.querySelector(".companion-orb")?.getBoundingClientRect();
     const contains = (area: DOMRect | undefined) =>
       Boolean(
         area &&
@@ -94,7 +97,7 @@ export function NotificationCard(props: {
         cursor.y <= area.bottom,
       );
     const focused = document.hasFocus() && Boolean(root.current?.contains(document.activeElement));
-    const next = contains(rect) || contains(orb) || focused;
+    const next = Boolean(cursor.overMascot) || contains(rect) || focused;
     if (paused.current !== next) pause(next);
   });
   // The native cursor feed also covers hovering an inactive floating window.
@@ -130,7 +133,7 @@ export function NotificationCard(props: {
           props.onClosed();
       }}
     >
-      <ThoughtCloud />
+      <ThoughtCloud mascotY={props.mascotY} />
       <button
         type="button"
         className="companion-notice-close"

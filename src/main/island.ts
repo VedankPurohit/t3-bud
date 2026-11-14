@@ -30,32 +30,52 @@ export function islandBounds(
   anchor: Point,
   size: { width: number; height: number },
   mascotX = Math.min(Math.round(size.width), workArea.width) / 2,
+  mascotY = 0,
 ): Rect {
   const width = Math.min(Math.round(size.width), workArea.width);
   const height = Math.min(Math.round(size.height), workArea.height);
   return {
     x: Math.round(clamp(anchor.x - mascotX, workArea.x, workArea.x + workArea.width - width)),
-    y: Math.round(clamp(anchor.y, workArea.y, workArea.y + workArea.height - height)),
+    y: Math.round(clamp(anchor.y - mascotY, workArea.y, workArea.y + workArea.height - height)),
     width,
     height,
   };
 }
 
 /** The anchor a dragged window implies: the top-center of where the window now sits. */
-export function anchorOf(window: Rect, mascotX = window.width / 2): Point {
-  return { x: Math.round(window.x + mascotX), y: Math.round(window.y) };
+export function anchorOf(window: Rect, mascotX = window.width / 2, mascotY = 0): Point {
+  return { x: Math.round(window.x + mascotX), y: Math.round(window.y + mascotY) };
 }
 
 export function windowPlacement(
   workArea: Rect,
   anchor: Point,
-  size: { width: number; height: number; notification?: boolean },
+  size: { width: number; height: number; notification?: boolean; hover?: boolean },
 ) {
   const width = Math.min(Math.round(size.width), workArea.width);
+  const height = Math.min(Math.round(size.height), workArea.height);
+  const anchorInsets = {
+    left: anchor.x - workArea.x,
+    right: workArea.x + workArea.width - anchor.x,
+    top: anchor.y - workArea.y,
+    bottom: workArea.y + workArea.height - anchor.y,
+  };
+  // Choose a direction from the screen anchor, independent of the current panel size.
+  const panelAbove = anchorInsets.top > anchorInsets.bottom;
   const mascotX = size.notification
     ? anchor.x - workArea.x >= width - 46
       ? width - 46
       : 46
     : width / 2;
-  return { bounds: islandBounds(workArea, anchor, size, mascotX), mascotX };
+  const mascotY = size.notification
+    ? clamp(anchor.y - workArea.y, 0, 24)
+    : panelAbove ? Math.max(0, height - 74) : 0;
+  const bounds = islandBounds(workArea, anchor, size, mascotX, mascotY);
+  return {
+    bounds,
+    mascotX: anchor.x - bounds.x,
+    mascotY: anchor.y - bounds.y,
+    anchorInsets,
+    panelAbove,
+  };
 }
