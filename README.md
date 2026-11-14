@@ -1,5 +1,12 @@
 # T3 Companion
 
+A small floating companion for [T3 Code](https://github.com/pingdotgg/t3code). It sits on top
+of every app, including full-screen ones, shows your inbox (Working, Snoozed, Settled), and lets
+you read, reply to, and start threads without switching to T3 Code.
+
+It is a separate Electron app. It connects the same way T3 Code's own web and mobile clients do,
+over the server's WebSocket API, so it needs no changes to T3 Code.
+
 > [!WARNING]
 > T3 Bud is at the very start of development, currently version **0.0.1**, and is
 > intended for testers and developers only. There are no published releases yet,
@@ -7,13 +14,6 @@
 > features. Fixes and more features are planned over the coming days.
 >
 > Follow [@ThisIsVedank on X](https://x.com/ThisIsVedank) for updates and to request features.
-
-A small floating companion for [T3 Code](https://github.com/pingdotgg/t3code). It sits on top
-of every app, including full-screen ones, shows your inbox (Working, Snoozed, Settled), and lets
-you read, reply to, and start threads without switching to T3 Code.
-
-It is a separate Electron app. It connects the same way T3 Code's own web and mobile clients do,
-over the server's WebSocket API, so it needs no changes to T3 Code.
 
 ## How it connects
 
