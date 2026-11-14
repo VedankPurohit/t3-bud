@@ -4,7 +4,7 @@ import { CompanionStore } from "./store";
 vi.mock("./config", () => ({ config: {} }));
 
 describe("composer attachment delivery", () => {
-  it("uploads the exact clipboard bytes and includes references in follow-ups and new threads", async () => {
+  it.each(["Describe this", ""])("delivers clipboard images with initial text %j", async (message) => {
     const commands: Array<{ tag: string; input: Record<string, unknown> }> = [];
     const store = new CompanionStore(
       () => {},
@@ -17,7 +17,13 @@ describe("composer attachment delivery", () => {
           commands.push({ tag, input });
           if (tag === "attachments.createUploadUrl")
             return { attachmentId: "pending-image", relativeUrl: "/upload", expiresAt: 1 };
-          return { threadId: "new-thread" };
+          if (tag === "orchestration.launchThread") {
+            // T3 Code's ThreadMessageIntake requires an ID to claim pending uploads.
+            if (input.threadId === undefined)
+              throw new Error("Uploaded attachments need a thread id at launch.");
+            return { threadId: input.threadId };
+          }
+          return {};
         },
       },
     });
@@ -48,15 +54,13 @@ describe("composer attachment delivery", () => {
     expect(upload.mock.calls[0]?.[0]).toBe("https://environment.test/upload");
     expect(Array.from(upload.mock.calls[0]?.[1]?.body as Uint8Array)).toEqual([1, 2, 3]);
     expect(
-      (
-        await store.launch({
-          projectId: "p",
-          message: "Describe this",
-          modelSelection: { instanceId: "codex", model: "test" },
-          images,
-        })
-      ).ok,
-    ).toBe(true);
+      await store.launch({
+        projectId: "p",
+        message,
+        modelSelection: { instanceId: "codex", model: "test" },
+        images,
+      }),
+    ).toEqual({ ok: true, value: { threadId: expect.any(String) } });
     expect(
       commands.find((command) => command.tag === "orchestration.launchThread")?.input
         .initialMessage,
