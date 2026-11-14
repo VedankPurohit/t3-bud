@@ -602,9 +602,12 @@ export class CompanionStore {
       const modelSelection = input.modelSelection ?? project?.defaultModelSelection ?? null;
       if (!modelSelection) throw new Error("Choose a model first.");
       const firstLine = input.message.trim().split("\n")[0] || "Image attachment";
+      // T3 Code needs the destination ID at launch to claim pending uploads.
+      const threadId = randomUUID();
       return this.withImages(input.images ?? [], async (attachments) => {
         const result = await socket.call<{ threadId: string }>("orchestration.launchThread", {
           commandId: randomUUID(),
+          threadId,
           creationSource: "web",
           projectId: input.projectId,
           title: firstLine.length > 60 ? `${firstLine.slice(0, 57)}…` : firstLine,
