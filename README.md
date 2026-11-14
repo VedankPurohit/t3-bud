@@ -1,5 +1,13 @@
 # T3 Companion
 
+> [!WARNING]
+> T3 Bud is at the very start of development, currently version **0.0.1**, and is
+> intended for testers and developers only. There are no published releases yet,
+> so you or your agent will need to build it from source. Expect bugs and missing
+> features. Fixes and more features are planned over the coming days.
+>
+> Follow [@ThisIsVedank on X](https://x.com/ThisIsVedank) for updates and to request features.
+
 A small floating companion for [T3 Code](https://github.com/pingdotgg/t3code). It sits on top
 of every app, including full-screen ones, shows your inbox (Working, Snoozed, Settled), and lets
 you read, reply to, and start threads without switching to T3 Code.
