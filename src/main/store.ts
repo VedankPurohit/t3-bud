@@ -24,6 +24,8 @@ import {
   SessionEndedError,
   sessionIsValid,
   socketUrl,
+  checkProtocol,
+  describeEnvironment,
   type Pairing,
 } from "./t3/auth";
 import { toProjects, toProviders, type ConfigProvider, type ProviderInstances } from "./t3/catalog";
@@ -33,6 +35,8 @@ import { buildSections } from "./t3/sections";
 import {
   applyShellItem,
   emptyShell,
+  isListed,
+  isSnoozed,
   pendingByListedThread,
   type RawThreadShell,
   type ShellState,
@@ -52,6 +56,9 @@ const RECONNECT_CAP_MS = 30_000;
 const errorMessage = (error: unknown) =>
   error instanceof Error ? error.message : "Something went wrong.";
 
+const isSettledThread = (thread: RawThreadShell) =>
+  isListed(thread) && thread.settledOverride === "settled" && !isSnoozed(thread, Date.now());
+
 /** Keeps a live view of one T3 Code environment over its client protocol. */
 export class CompanionStore {
   private pairing: Pairing | null = null;
@@ -63,6 +70,13 @@ export class CompanionStore {
   private providerInstances: ProviderInstances = {};
   private searchRows = new Map<string, RawThreadShell>();
   private olderSettledSearch = false;
+  private omitOlderSettled = false;
+  private serverReady: Promise<void> | null = null;
+  private shellReady: Promise<void> | null = null;
+  private markShellReady: (() => void) | null = null;
+  private settledShell: ShellState | null = null;
+  private settledLoadId = 0;
+  private readonly settledLoads = new Set<unknown[]>();
   private syncedAt: string | null = null;
   private retry = 0;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -85,7 +99,7 @@ export class CompanionStore {
   // ── State ──────────────────────────────────────────────────────────────────────────────────
 
   state(): CompanionState {
-    const sections = buildSections(this.shell, Date.now());
+    const sections = buildSections(this.catalogShell(), Date.now());
     const projects = toProjects(this.shell);
     return {
       connection: this.connection,
@@ -96,6 +110,15 @@ export class CompanionStore {
       syncedAt: this.syncedAt,
       synchronized: this.shell.synchronized,
     };
+  }
+
+  private catalogShell(): ShellState {
+    if (!this.omitOlderSettled && !this.settledShell) return this.shell;
+    const threads = new Map(this.settledShell?.threads);
+    for (const [id, thread] of this.shell.threads) {
+      if (this.settledShell || !this.omitOlderSettled || !isSettledThread(thread)) threads.set(id, thread);
+    }
+    return { ...this.shell, threads };
   }
 
   private publish() {
@@ -173,6 +196,14 @@ export class CompanionStore {
     this.projectIcons.clear();
     this.searchRows.clear();
     this.olderSettledSearch = false;
+    this.omitOlderSettled = false;
+    this.serverReady = null;
+    this.markShellReady?.();
+    this.markShellReady = null;
+    this.shellReady = null;
+    this.settledShell = null;
+    this.settledLoads.clear();
+    this.settledLoadId += 1;
     if (this.retryTimer) clearTimeout(this.retryTimer);
     this.retryTimer = null;
     this.cancelThread = null;
@@ -180,11 +211,38 @@ export class CompanionStore {
     this.socket = null;
   }
 
+  dispose() {
+    this.disconnect();
+    if (this.publishTimer) clearTimeout(this.publishTimer);
+    if (this.detailTimer) clearTimeout(this.detailTimer);
+    this.publishTimer = null;
+    this.detailTimer = null;
+  }
+
+  private recover(generation: number, reason: string) {
+    if (generation !== this.generation || !this.pairing) return;
+    this.disconnect();
+    this.setConnection({ state: "offline", serverUrl: this.pairing.httpBaseUrl, error: reason });
+    this.scheduleReconnect();
+  }
+
   async searchThreads(input: ThreadSearchInput): Promise<ThreadSearchResult> {
     const generation = this.generation;
     const query = input.query.trim().slice(0, 200);
     let server: ServerSearchResult = { matches: [] };
     let error: string | null = null;
+    if (input.includeSettled && !query) {
+      try {
+        await this.serverReady;
+        // Anchor history after the live stream's initial cursor. Otherwise a later initial
+        // snapshot can skip deletions that occurred after the history page was read.
+        if (this.olderSettledSearch) await this.shellReady;
+        if (generation !== this.generation) throw new Error("The connected environment changed.");
+        await this.loadSettled(input.projectIds);
+      } catch (cause) {
+        error = errorMessage(cause);
+      }
+    }
     if (query.length >= 2) {
       try {
         if (!this.socket || this.socket.closed)
@@ -207,9 +265,42 @@ export class CompanionStore {
       return { threads: [], error: "The connected environment changed." };
     this.searchRows = new Map((server.threads ?? []).map((thread) => [thread.id, thread]));
     return {
-      threads: searchThreadCatalog(this.shell, { ...input, query }, server, Date.now()),
+      threads: searchThreadCatalog(this.catalogShell(), { ...input, query }, server, Date.now()),
       error,
     };
+  }
+
+  private async loadSettled(projectIds: readonly string[]) {
+    const socket = this.socket;
+    if (!socket || socket.closed) throw new Error("Can't reach T3 Code. Try again when connected.");
+    // Older servers include settled rows in the regular snapshot and have no paging RPC.
+    if (!this.olderSettledSearch) return;
+    const generation = this.generation;
+    const loadId = ++this.settledLoadId;
+    const buffered: unknown[] = [];
+    this.settledLoads.add(buffered);
+    try {
+      const page = await socket.call<{ snapshotSequence: number; threads: RawThreadShell[] }>(
+        "orchestration.getOlderSettledThreads",
+        {
+          before: { settledAt: new Date().toISOString() },
+          limit: 50,
+          ...(projectIds.length ? { projectIds } : {}),
+        },
+      );
+      if (generation !== this.generation || loadId !== this.settledLoadId) return;
+      let settled = applyShellItem(emptyShell, {
+        kind: "snapshot",
+        snapshot: { snapshotSequence: page.snapshotSequence, projects: [], threads: page.threads },
+      }, isSettledThread);
+      // Replay changes after the page's cursor, including removals, so a slow page cannot
+      // resurrect a thread that was unsettled or deleted while it loaded.
+      for (const item of buffered) settled = applyShellItem(settled, item, isSettledThread);
+      this.settledShell = settled;
+      this.publish();
+    } finally {
+      this.settledLoads.delete(buffered);
+    }
   }
 
   /** Coming back to the island retries a dropped connection at once. */
@@ -226,6 +317,7 @@ export class CompanionStore {
     const generation = this.generation;
     let socket: RpcSocket;
     try {
+      checkProtocol(await describeEnvironment(pairing.httpBaseUrl));
       const url = await socketUrl(pairing.httpBaseUrl, pairing.token);
       socket = await RpcSocket.open(url, (code) => this.onClose(generation, code));
     } catch (error) {
@@ -240,24 +332,28 @@ export class CompanionStore {
     }
     if (generation !== this.generation) return socket.close();
     this.socket = socket;
+    this.shellReady = new Promise((resolve) => { this.markShellReady = resolve; });
     this.retry = 0;
     this.setConnection({ state: "connected", serverUrl: pairing.httpBaseUrl });
 
-    void socket
+    this.serverReady = socket
       .call<{
         providers: ConfigProvider[];
         settings?: { providerInstances?: ProviderInstances };
+        shellThreadFamilies?: boolean;
         shellOlderSettled?: boolean;
       }>("server.getConfig", {})
       .then((serverConfig) => {
         if (generation !== this.generation) return;
         this.olderSettledSearch = serverConfig.shellOlderSettled === true;
+        this.omitOlderSettled = this.olderSettledSearch && serverConfig.shellThreadFamilies === true;
         this.providerConfig = serverConfig.providers ?? [];
         this.providerInstances = serverConfig.settings?.providerInstances ?? {};
         this.providers = toProviders(this.providerConfig, this.providerInstances);
         this.publish();
+        this.subscribeShell(socket, generation, serverConfig.shellThreadFamilies === true);
       })
-      .catch(() => undefined);
+      .catch((error) => this.recover(generation, errorMessage(error)));
 
     socket.stream(
       "subscribeServerConfig",
@@ -284,25 +380,46 @@ export class CompanionStore {
         this.providers = toProviders(this.providerConfig, this.providerInstances);
         this.publish();
       },
-      () => undefined,
+      () => this.recover(generation, "T3 Code's configuration stream ended. Reconnecting."),
     );
 
-    // Resumes from the last sequence after a reconnect; the server sends what was missed.
+    if (this.openThreadId) this.subscribeThread();
+  }
+
+  private subscribeShell(socket: RpcSocket, generation: number, omitIdleSubagents: boolean) {
+    // Ask capable servers to trim history before building the snapshot. The remaining child
+    // rows and recent settled rows are discarded locally; settled history loads on demand.
     socket.stream(
       "orchestration.subscribeShell",
-      this.shell.sequence >= 0
-        ? { afterSequence: this.shell.sequence, requestCompletionMarker: true }
-        : { requestCompletionMarker: true },
+      {
+        ...(this.shell.sequence >= 0 ? { afterSequence: this.shell.sequence } : {}),
+        requestCompletionMarker: true,
+        ...(omitIdleSubagents ? { omitIdleSubagents: true } : {}),
+        ...(this.omitOlderSettled ? { omitOlderSettled: true } : {}),
+      },
       (value) => {
-        this.shell = applyShellItem(this.shell, value);
+        if (generation !== this.generation) return;
+        this.shell = applyShellItem(this.shell, value, (thread) =>
+          isListed(thread) && (!this.omitOlderSettled || !isSettledThread(thread)));
+        const item = value as { kind?: string; sequence?: number; resolvedRepositoryIdentityRoots?: unknown };
+        if (item.kind === "synchronized" ||
+          (item.kind === "snapshot" && item.resolvedRepositoryIdentityRoots === undefined)) {
+          this.markShellReady?.();
+          this.markShellReady = null;
+        }
+        // The live snapshot deliberately omits settled history. Only its deltas may update
+        // a separately loaded history page.
+        if (typeof item.sequence === "number" && this.settledShell)
+          this.settledShell = applyShellItem(this.settledShell, value, isSettledThread);
+        if (typeof item.sequence === "number")
+          for (const buffered of this.settledLoads) buffered.push(value);
         this.syncedAt = new Date().toISOString();
         this.visitIfNeeded();
         this.publish();
         if (this.openThreadId) this.scheduleDetail();
       },
-      () => undefined,
+      () => this.recover(generation, "T3 Code's thread list stopped updating. Reconnecting."),
     );
-    if (this.openThreadId) this.subscribeThread();
   }
 
   private onClose(generation: number, code: number) {
@@ -314,6 +431,7 @@ export class CompanionStore {
     // The server closes with 1000 when the token expires or is revoked.
     void (async () => {
       if (code === 1000 && !(await sessionIsValid(pairing.httpBaseUrl, pairing.token))) {
+        if (generation !== this.generation) return;
         return this.sessionEnded("T3 Code ended this companion's session. Pair it again.");
       }
       if (generation !== this.generation) return;
@@ -366,17 +484,18 @@ export class CompanionStore {
     const threadId = this.openThreadId;
     const socket = this.socket;
     if (!threadId || !socket) return;
+    const generation = this.generation;
     this.cancelThread = socket.stream(
       "orchestration.subscribeThread",
       this.thread.sequence >= 0
         ? { threadId, afterSequence: this.thread.sequence, requestCompletionMarker: true }
         : { threadId, requestCompletionMarker: true },
       (value) => {
-        if (this.openThreadId !== threadId) return;
+        if (generation !== this.generation || this.openThreadId !== threadId) return;
         this.thread = applyThreadItem(this.thread, threadId, value);
         this.scheduleDetail();
       },
-      () => undefined,
+      () => this.recover(generation, "T3 Code's conversation stream ended. Reconnecting."),
     );
   }
 
@@ -394,7 +513,9 @@ export class CompanionStore {
    */
   private visitIfNeeded() {
     const threadId = this.openThreadId;
-    const shellThread = threadId ? this.shell.threads.get(threadId) : undefined;
+    const shellThread = threadId
+      ? this.shell.threads.get(threadId) ?? this.settledShell?.threads.get(threadId) ?? this.searchRows.get(threadId)
+      : undefined;
     if (!threadId || !shellThread || !this.socket) return;
     const completion = shellThread.latestRunCompletedAt ?? shellThread.createdAt;
     if (this.visitSent && completion === this.visitedCompletion) return;
@@ -415,7 +536,7 @@ export class CompanionStore {
   private detail(): ThreadDetail {
     const threadId = this.openThreadId ?? "";
     const shellThread: RawThreadShell | undefined =
-      this.shell.threads.get(threadId) ?? this.searchRows.get(threadId);
+      this.shell.threads.get(threadId) ?? this.settledShell?.threads.get(threadId) ?? this.searchRows.get(threadId);
     const projection = this.thread.projection;
     const messages = (projection?.messages ?? [])
       .filter((message) => message.role === "user" || message.role === "assistant")

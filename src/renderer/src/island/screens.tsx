@@ -84,18 +84,20 @@ export function InboxScreen(props: {
 }) {
   const { state } = useIsland();
   const [result, setResult] = useState<{ key: string; value: ThreadSearchResult } | null>(null);
-  const searchKey = JSON.stringify([state.environmentId, props.search]);
   const searching = props.search.query.trim().length > 0;
   const filtering = props.search.projectIds.length > 0;
+  const loadingSettled = props.shelf === "settled" && !searching;
+  const searchKey = JSON.stringify([state.environmentId, props.search, loadingSettled, state.connection.state]);
   const active = searching || filtering;
+  const requestActive = active || loadingSettled;
   // Debounce the server's message search and discard replies for superseded queries.
   useEffect(() => {
-    if (!active) return;
+    if (!requestActive) return;
     let current = true;
     const timer = setTimeout(
       () => {
         void api()
-          .searchThreads(props.search)
+          .searchThreads({ ...props.search, includeSettled: loadingSettled })
           .then((value) => {
             if (current) setResult({ key: searchKey, value });
           })
@@ -116,9 +118,9 @@ export function InboxScreen(props: {
       current = false;
       clearTimeout(timer);
     };
-  }, [searchKey, active, state.connection.state]);
+  }, [searchKey, requestActive, state.connection.state]);
   const found = result?.key === searchKey ? result.value : null;
-  const pending = active && !found;
+  const pending = requestActive && !found;
   const inScope = (thread: ThreadSummary) =>
     !filtering || props.search.projectIds.includes(thread.projectId);
   const live = [...state.inbox, ...state.working, ...state.snoozed, ...state.settled];
@@ -258,7 +260,9 @@ export function InboxScreen(props: {
             </EmptyMedia>
             <EmptyTitle>
               {pending
-                ? "Searching…"
+                ? loadingSettled
+                  ? "Loading settled threads…"
+                  : "Searching…"
                 : active
                   ? "No threads found"
                   : props.shelf === "inbox"
@@ -293,7 +297,7 @@ export function InboxScreen(props: {
           ) : null}
         </Empty>
       )}
-      {active && found?.error ? (
+      {requestActive && found?.error ? (
         <p role="status" className="shrink-0 px-3 pb-2 text-xs text-warning-foreground">
           {found.error}
         </p>

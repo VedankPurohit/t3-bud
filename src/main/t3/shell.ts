@@ -77,7 +77,11 @@ type ShellItem =
   | { kind: "thread.removed"; sequence: number; threadId: string }
   | { kind: string; sequence?: number };
 
-export function applyShellItem(state: ShellState, value: unknown): ShellState {
+export function applyShellItem(
+  state: ShellState,
+  value: unknown,
+  keepThread: (thread: RawThreadShell) => boolean = () => true,
+): ShellState {
   const item = value as ShellItem;
   if (item.kind === "snapshot" && "snapshot" in item) {
     // A snapshot carrying resolved repository roots only enriches projects; its thread list is
@@ -86,7 +90,7 @@ export function applyShellItem(state: ShellState, value: unknown): ShellState {
     return {
       sequence: item.snapshot.snapshotSequence,
       projects: new Map(item.snapshot.projects.map((project) => [project.id, project])),
-      threads: new Map(item.snapshot.threads.map((thread) => [thread.id, thread])),
+      threads: new Map(item.snapshot.threads.filter(keepThread).map((thread) => [thread.id, thread])),
       synchronized: state.synchronized,
     };
   }
@@ -109,7 +113,7 @@ export function applyShellItem(state: ShellState, value: unknown): ShellState {
     case "thread.updated": {
       const { location, thread } = item as { location: string; thread: RawThreadShell };
       const threads = new Map(state.threads);
-      if (location === "active") threads.set(thread.id, thread);
+      if (location === "active" && keepThread(thread)) threads.set(thread.id, thread);
       else threads.delete(thread.id);
       return { ...next, threads };
     }

@@ -35,7 +35,7 @@ export interface ThreadSummary {
   readonly runtimeMode: string | null;
   readonly createdBy: string;
   readonly updatedAt: string;
-  /** Approvals and questions waiting on the user, including ones from its subagents. */
+  /** Approvals and questions waiting on the user in this thread. */
   readonly pendingRequestCount: number;
   /** T3 Code's unread: the latest run finished after the user last looked at the thread. */
   readonly unread: boolean;
@@ -46,6 +46,8 @@ export interface ThreadSummary {
 export interface ThreadSearchInput {
   readonly query: string;
   readonly projectIds: readonly string[];
+  /** Load settled history on demand when the Settled tab opens. */
+  readonly includeSettled?: boolean;
 }
 
 export interface ThreadSearchHit extends ThreadSummary {
