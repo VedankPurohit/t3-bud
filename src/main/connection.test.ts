@@ -56,6 +56,46 @@ describe("startup pairing", () => {
     expect(store.state().connection.state).toBe("connected");
   });
 
+  it("ignores an older pairing read once a newer startup read begins", async () => {
+    let finishFirst!: (value: typeof pairing) => void;
+    let finishSecond!: (value: typeof pairing) => void;
+    vi.mocked(config.pairing)
+      .mockImplementationOnce(() => new Promise(resolve => { finishFirst = resolve; }))
+      .mockImplementationOnce(() => new Promise(resolve => { finishSecond = resolve; }));
+    const store = new CompanionStore(() => {}, () => {});
+    stores.push(store);
+    const first = store.start(null);
+    const second = store.start(null);
+    finishFirst(pairing);
+    await first;
+    await vi.advanceTimersByTimeAsync(0);
+    expect(socketUrl).not.toHaveBeenCalled();
+    const newer = { ...pairing, environmentId: "new-env", token: "new-session" };
+    finishSecond(newer);
+    await second;
+    await vi.advanceTimersByTimeAsync(0);
+    expect(socketUrl).toHaveBeenCalledExactlyOnceWith(newer.httpBaseUrl, newer.token);
+    expect(store.state().environmentId).toBe("new-env");
+  });
+
+  it("ignores older discovery after another startup read begins", async () => {
+    let finishRead!: (value: null) => void;
+    let finishDiscovery!: (value: string) => void;
+    vi.mocked(config.pairing).mockResolvedValueOnce(null)
+      .mockImplementationOnce(() => new Promise(resolve => { finishRead = resolve; }));
+    const store = new CompanionStore(() => {}, () => {});
+    stores.push(store);
+    const first = store.start(() => new Promise(resolve => { finishDiscovery = resolve; }));
+    await vi.advanceTimersByTimeAsync(0);
+    const second = store.start("http://new-server:3773");
+    finishDiscovery("http://old-server:3773");
+    await first;
+    expect(store.state().connection).toEqual({ state: "unconfigured", suggestedUrl: null });
+    finishRead(null);
+    await second;
+    expect(store.state().connection).toEqual({ state: "unconfigured", suggestedUrl: "http://new-server:3773" });
+  });
+
   it("discovers a server after one unsuccessful credential read", async () => {
     vi.mocked(config.pairing).mockResolvedValue(null);
     const store = new CompanionStore(() => {}, () => {});

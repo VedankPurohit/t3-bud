@@ -82,6 +82,7 @@ export class CompanionStore {
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private publishTimer: ReturnType<typeof setTimeout> | null = null;
   private generation = 0;
+  private startRequest = 0;
   private readonly projectIcons = new Map<string, Promise<string | null>>();
 
   private openThreadId: string | null = null;
@@ -137,9 +138,10 @@ export class CompanionStore {
   // ── Pairing and connection ─────────────────────────────────────────────────────────────────
 
   async start(suggestedUrl: string | null | (() => Promise<string | null>)) {
+    const request = ++this.startRequest;
     const generation = this.generation;
     const pairing = await config.pairing();
-    if (generation !== this.generation) return;
+    if (generation !== this.generation || request !== this.startRequest) return;
     if (pairing) {
       this.use(pairing);
       return;
@@ -148,7 +150,7 @@ export class CompanionStore {
     const resolvedSuggestedUrl = serverUrl
       ? null
       : typeof suggestedUrl === "function" ? await suggestedUrl() : suggestedUrl;
-    if (generation !== this.generation) return;
+    if (generation !== this.generation || request !== this.startRequest) return;
     this.setConnection(
       serverUrl
         ? {
