@@ -10,11 +10,15 @@ import {
 
 import { controlsSize, FOLDED_SIZE, IslandCapsule } from "./island/capsule";
 import { selectHoverThreads } from "./lib/activity";
-import { NotificationCard, NOTICE_WINDOW } from "./island/notification";
+import { NotificationStack, notificationWindowSize } from "./island/notification-stack";
 import {
   collectThreadNotices,
   emptyNotificationTracker,
   enqueueThreadNotices,
+  dismissThreadNotices,
+  previewThreadNotices,
+  summarizeThreadNotices,
+  threadNoticeIds,
   type ThreadNotice,
 } from "./lib/notifications";
 import { IslandContext, makeLookups } from "./island/context";
@@ -57,10 +61,12 @@ export function App() {
   const tracker = useRef(emptyNotificationTracker);
   const [notices, setNotices] = useState<ThreadNotice[]>([]);
   const [noticePaused, setNoticePaused] = useState(false);
-  const [closingNoticeId, setClosingNoticeId] = useState<string | null>(null);
+  const [noticeExpanded, setNoticeExpanded] = useState(false);
+  const [closingNoticeIds, setClosingNoticeIds] = useState<readonly string[]>([]);
   const notice = notices[0];
   const noticeVisible = Boolean(notice) && mode.kind === "folded";
-  const noticeClosing = notice?.id === closingNoticeId;
+  const noticeClosing =
+    notices.length > 0 && notices.every((item) => closingNoticeIds.includes(item.id));
 
   const controls = controlsSize(state ? selectHoverThreads(state).length : 0);
   const revealed = mode.kind === "folded" && mode.revealed === true;
@@ -74,7 +80,7 @@ export function App() {
             height: mode.pickerOpen ? Math.max(472, quickHeight + 240) : Math.max(208, quickHeight),
           }
         : noticeVisible
-          ? NOTICE_WINDOW
+          ? notificationWindowSize(summarizeThreadNotices(notices).items.length, noticeExpanded)
           : hoverSpace
             ? {
                 width: controls.width + SHADOW_MARGIN.x,
@@ -157,8 +163,9 @@ export function App() {
       tracker.current.environmentId !== state.environmentId
     ) {
       setNotices([]);
-      setClosingNoticeId(null);
+      setClosingNoticeIds([]);
       setNoticePaused(false);
+      setNoticeExpanded(false);
     }
     const next = collectThreadNotices(tracker.current, state);
     tracker.current = next.tracker;
@@ -166,23 +173,53 @@ export function App() {
       setNotices((current) => enqueueThreadNotices(current, next.notices));
   }, [state]);
 
-  // Give each queued alert its own reading time, paused while hovered or while composing a thread.
+  // Show each batch once; explicit review keeps its details open until the user closes them.
   useEffect(() => {
-    if (!notice || notice.kind === "preview" || !noticeVisible || noticePaused || noticeClosing)
+    if (
+      !notices.length ||
+      notices.every((item) => item.kind === "preview") ||
+      !noticeVisible ||
+      noticePaused ||
+      noticeClosing ||
+      noticeExpanded
+    )
       return;
-    const timer = setTimeout(() => setClosingNoticeId(notice.id), NOTIFICATION_MS);
+    const ids = notices.map((item) => item.id);
+    const timer = setTimeout(
+      () => setClosingNoticeIds((current) => [...new Set([...current, ...ids])]),
+      NOTIFICATION_MS,
+    );
     return () => clearTimeout(timer);
-  }, [notice?.id, noticeVisible, noticePaused, noticeClosing]);
+  }, [notices, noticeVisible, noticePaused, noticeClosing, noticeExpanded]);
 
-  const dismissNotice = () => {
-    if (notice) setClosingNoticeId(notice.id);
+  const dismissNotice = (id?: string) => {
+    const ids = id ? threadNoticeIds(notices, id) : notices.map((item) => item.id);
+    setClosingNoticeIds((current) => [...new Set([...current, ...ids])]);
   };
-  const removeNotice = () => {
-    if (!notice) return;
-    setNotices((current) => current.filter((item) => item.id !== notice.id));
-    setNoticePaused(false);
+  const removeNotice = (id: string) => {
+    const related = threadNoticeIds(notices, id);
+    const ids = noticeClosing
+      ? closingNoticeIds
+      : closingNoticeIds.includes(id)
+        ? related.filter((item) => closingNoticeIds.includes(item))
+        : related;
+    setNotices((current) => dismissThreadNotices(current, ids));
+    setClosingNoticeIds((current) => current.filter((item) => !ids.includes(item)));
+    if (notices.every((item) => ids.includes(item.id))) setNoticeExpanded(false);
     setHoverSpace(mode.kind === "folded" && Boolean(mode.revealed));
   };
+
+  // Hidden windows can omit transition-end events; finish only the batch that started closing.
+  useEffect(() => {
+    if (!closingNoticeIds.length) return;
+    const ids = closingNoticeIds;
+    const timer = setTimeout(() => {
+      setNotices((current) => dismissThreadNotices(current, ids));
+      setClosingNoticeIds((current) => current.filter((id) => !ids.includes(id)));
+      if (notices.every((item) => ids.includes(item.id))) setNoticeExpanded(false);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [closingNoticeIds]);
 
   // Cmd+W reaches the main process as a close; it folds the island instead.
   useEffect(
@@ -202,10 +239,12 @@ export function App() {
   }, [toast]);
 
   const open = async (next?: View) => {
+    setNoticeExpanded(false);
     if (next) setView(next);
     setMode({ kind: "open" });
   };
   const fold = () => {
+    setNoticeExpanded(false);
     setHoverSpace(false);
     setMode({ kind: "folded" });
   };
@@ -279,17 +318,10 @@ export function App() {
               onSearchChange={setThreadSearch}
               onPreviewNotification={() => {
                 setNotices((current) => [
-                  {
-                    id: "preview",
-                    kind: "preview",
-                    thread:
-                      state.inbox.find((thread) => thread.status === "completed") ??
-                      state.working[0] ??
-                      null,
-                  },
+                  ...previewThreadNotices(state),
                   ...current.filter((item) => item.kind !== "preview"),
                 ]);
-                setClosingNoticeId(null);
+                setClosingNoticeIds([]);
                 setNoticePaused(false);
                 fold();
               }}
@@ -330,26 +362,27 @@ export function App() {
           onNewThread={() => (connected ? setMode({ kind: "quick" }) : void open())}
         />
         {notice && noticeVisible ? (
-          <NotificationCard
-            key={notice.id}
-            notice={notice}
-            remaining={notices.length - 1}
+          <NotificationStack
+            notices={notices}
+            closingIds={closingNoticeIds}
+            expanded={noticeExpanded}
             mascotY={mascotY}
-            closing={noticeClosing}
+            onExpandedChange={setNoticeExpanded}
             side={mascotX > size.width / 2 ? "left" : "right"}
             onPauseChange={setNoticePaused}
             onDismiss={dismissNotice}
             onClosed={removeNotice}
-            onReply={() => {
-              removeNotice();
+            onClearAll={() => dismissNotice()}
+            onReply={(notice) => {
+              removeNotice(notice.id);
               void open(
                 notice.thread
                   ? { kind: "thread", threadId: notice.thread.threadId }
                   : { kind: "inbox" },
               );
             }}
-            onOpen={() => {
-              removeNotice();
+            onOpen={(notice) => {
+              removeNotice(notice.id);
               if (notice.thread) {
                 void api().openInT3Code(notice.thread.threadId);
                 return;

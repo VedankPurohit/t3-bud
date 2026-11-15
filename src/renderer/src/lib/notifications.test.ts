@@ -5,6 +5,9 @@ import {
   collectThreadNotices,
   emptyNotificationTracker,
   enqueueThreadNotices,
+  dismissThreadNotices,
+  summarizeThreadNotices,
+  threadNoticeIds,
 } from "./notifications";
 
 const thread = (id: string, overrides: Partial<ThreadSummary> = {}): ThreadSummary => ({
@@ -91,6 +94,29 @@ describe("thread notifications", () => {
       ["b", "failed"],
       ["c", "attention"],
     ]);
+    expect(
+      dismissThreadNotices(next.notices, [next.notices[1]!.id]).map(
+        (notice) => notice.thread?.threadId,
+      ),
+    ).toEqual(["a", "c"]);
+    const arrivedDuringDismissal = { ...next.notices[0]!, id: "new-completion" };
+    expect(
+      dismissThreadNotices(
+        enqueueThreadNotices(next.notices, [arrivedDuringDismissal]),
+        next.notices.map((notice) => notice.id),
+      ),
+    ).toEqual([arrivedDuringDismissal]);
+    const repeated = { ...next.notices[0]!, id: "another-run-for-a" };
+    const batch = [...next.notices, repeated];
+    const summary = summarizeThreadNotices(batch);
+    expect(summary.items.map((notice) => notice.id)).toEqual([
+      repeated.id,
+      next.notices[1]!.id,
+      next.notices[2]!.id,
+    ]);
+    expect(summary.message).toBe("1 thread finished · 1 failed · 1 needs you");
+    expect(summary.kind).toBe("attention");
+    expect(threadNoticeIds(batch, repeated.id)).toEqual([next.notices[0]!.id, repeated.id]);
     expect(
       collectThreadNotices(
         next.tracker,
