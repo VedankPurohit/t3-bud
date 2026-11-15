@@ -1,23 +1,35 @@
 {
   "name": "t3-companion",
-  "productName": "T3 Companion",
+  "productName": "T3 Bud",
   "version": "0.1.0",
   "private": true,
   "description": "A floating companion for T3 Code: your inbox, quick threads, and live status on top of every app.",
   "license": "MIT",
   "main": "out/main/index.js",
   "type": "module",
+  "author": "Vedank Purohit",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/VedankPurohit/t3-bud.git"
+  },
+  "packageManager": "pnpm@10.28.2",
+  "engines": {
+    "node": ">=22.16.0",
+    "pnpm": ">=10 <11"
+  },
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
-    "start": "electron-vite preview",
+    "start": "electron-vite preview --skipBuild",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "test": "vitest run",
     "test:placement": "pnpm build && node scripts/smoke-native-placement.mjs",
     "dist": "electron-vite build && electron-builder --mac --dir",
+    "companion": "node scripts/companion.mjs",
     "design:dev": "vite --config design.vite.config.ts",
     "design:build": "vite build --config design.vite.config.ts",
-    "design:shoot": "node scripts/shoot-design.mjs"
+    "design:shoot": "node scripts/shoot-design.mjs",
+    "postinstall": "install-electron"
   },
   "devDependencies": {
     "@tailwindcss/vite": "4.3.5",
@@ -33,7 +45,8 @@
     "typescript": "^7.0.2",
     "vite": "8.3.8",
     "vite-plugin-singlefile": "2.3.4",
-    "vitest": "^5.1.0"
+    "vitest": "^5.1.0",
+    "ws": "^8.23.0"
   },
   "dependencies": {
     "@base-ui/react": "1.9.0",
@@ -45,6 +58,22 @@
     "react-markdown": "10.1.0",
     "remark-gfm": "4.0.1",
     "tailwind-merge": "^3.7.0"
+  },
+  "build": {
+    "appId": "com.vedank.t3companion",
+    "executableName": "t3-companion",
+    "files": [
+      "out/**/*",
+      "package.json",
+      "LICENSE",
+      "THIRD_PARTY_NOTICES.md",
+      "licenses/**/*"
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "identity": "-",
+      "hardenedRuntime": true
+    }
   },
   "pnpm": {
     "onlyBuiltDependencies": [

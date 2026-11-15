@@ -1,0 +1,37 @@
+name: Bug report
+description: Report a problem with steps someone else can reproduce.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Include the smallest reproduction you can. Redact pairing links, tokens, private messages, and local project paths from logs and screenshots.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Describe the observed behavior and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open...
+        2. Click...
+        3. Observe...
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Versions and environment
+      description: Include the T3 Bud commit, T3 Code version, macOS version, and Apple Silicon or Intel. For install failures, add Node and pnpm versions.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Logs, screenshots, or other evidence
+      description: Optional. Share only the relevant redacted output. Do not upload config.json or pairing output.

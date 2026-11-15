@@ -82,6 +82,7 @@ export class CompanionStore {
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private publishTimer: ReturnType<typeof setTimeout> | null = null;
   private generation = 0;
+  private startRequest = 0;
   private readonly projectIcons = new Map<string, Promise<string | null>>();
 
   private openThreadId: string | null = null;
@@ -136,21 +137,28 @@ export class CompanionStore {
 
   // ── Pairing and connection ─────────────────────────────────────────────────────────────────
 
-  start(suggestedUrl: string | null) {
-    const pairing = config.pairing();
+  async start(suggestedUrl: string | null | (() => Promise<string | null>)) {
+    const request = ++this.startRequest;
+    const generation = this.generation;
+    const pairing = await config.pairing();
+    if (generation !== this.generation || request !== this.startRequest) return;
     if (pairing) {
       this.use(pairing);
       return;
     }
     const serverUrl = config.serverUrl();
+    const resolvedSuggestedUrl = serverUrl
+      ? null
+      : typeof suggestedUrl === "function" ? await suggestedUrl() : suggestedUrl;
+    if (generation !== this.generation || request !== this.startRequest) return;
     this.setConnection(
       serverUrl
         ? {
             state: "needs-auth",
             serverUrl,
-            reason: "The pairing expired. Pair the companion again.",
+            reason: "The pairing is unavailable or expired. Unlock the keychain, or pair the companion again.",
           }
-        : { state: "unconfigured", suggestedUrl },
+        : { state: "unconfigured", suggestedUrl: resolvedSuggestedUrl },
     );
   }
 
@@ -165,11 +173,11 @@ export class CompanionStore {
     this.setConnection({ state: "pairing", serverUrl: target.httpBaseUrl });
     try {
       const pairing = await pair(target);
-      config.savePairing(pairing);
+      await config.savePairing(pairing);
       this.use(pairing);
       return { ok: true, value: undefined };
     } catch (error) {
-      this.start(address);
+      await this.start(address);
       return { ok: false, error: errorMessage(error) };
     }
   }

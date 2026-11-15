@@ -5,9 +5,8 @@ import {
   ShieldQuestionIcon,
   XIcon,
 } from "lucide-react";
-import { useEffect, useEffectEvent, useRef } from "react";
 
-import type { ThreadNotice } from "../lib/notifications";
+import { describeThreadNotice, type ThreadNotice } from "../lib/notifications";
 import { relativeTime } from "../lib/format";
 import { Button } from "../t3/ui/button";
 import { useIsland, driverOf } from "./context";
@@ -17,11 +16,32 @@ import "./notification.css";
 
 export const NOTICE_SIZE = { width: 280, height: 128 } as const;
 export const NOTICE_WINDOW = { width: 404, height: 142 } as const;
+export const NOTICE_ICONS = {
+  attention: ShieldQuestionIcon,
+  failed: CircleAlertIcon,
+  preview: BellIcon,
+  completed: CheckCircle2Icon,
+};
 
-function ThoughtCloud({ mascotY = 0 }: { mascotY?: number }) {
+export function ThoughtTrail({
+  mascotY = 24,
+  offsetX = 280,
+}: {
+  mascotY?: number;
+  offsetX?: number;
+}) {
   const targetY = mascotY + 30 - 2;
   const bigY = 65 + (targetY - 65) * (12 / 38);
   const smallY = 65 + (targetY - 65) * (28 / 38);
+  return (
+    <g transform={`translate(${offsetX} 0)`}>
+      <ellipse className="companion-notice-thought" cx="10" cy={bigY} rx="7" ry="6" />
+      <circle className="companion-notice-thought" cx="26" cy={smallY} r="3.5" />
+    </g>
+  );
+}
+
+export function ThoughtCloud({ trail, mascotY }: { trail: boolean; mascotY?: number }) {
   return (
     <svg
       className="companion-notice-cloud"
@@ -29,101 +49,42 @@ function ThoughtCloud({ mascotY = 0 }: { mascotY?: number }) {
       preserveAspectRatio="none"
       aria-hidden
     >
-      <rect
-        className="companion-notice-body"
-        x="2"
-        y="10"
-        width="276"
-        height="110"
-        rx="26"
-      />
-      <ellipse className="companion-notice-thought" cx="290" cy={bigY} rx="7" ry="6" />
-      <circle className="companion-notice-thought" cx="306" cy={smallY} r="3.5" />
+      <rect className="companion-notice-body" x="2" y="10" width="276" height="110" rx="26" />
+      {trail ? <ThoughtTrail mascotY={mascotY} /> : null}
     </svg>
   );
 }
 
 export function NotificationCard(props: {
   notice: ThreadNotice;
-  remaining: number;
-  mascotY?: number;
   closing: boolean;
+  trail?: boolean;
+  mascotY?: number;
   side?: "left" | "right";
-  onPauseChange: (paused: boolean) => void;
   onReply: () => void;
   onOpen: () => void;
   onDismiss: () => void;
   onClosed: () => void;
 }) {
   const lookups = useIsland();
-  const root = useRef<HTMLElement>(null);
-  const paused = useRef(false);
   const thread = props.notice.thread;
   const project = thread ? lookups.projectById.get(thread.projectId) : undefined;
   const provider = thread?.providerInstanceId
     ? lookups.providerById.get(thread.providerInstanceId)
     : undefined;
   const kind = props.notice.kind;
-  const displayKind = kind === "preview" && thread?.status === "completed" ? "completed" : kind;
-  const Icon =
-    displayKind === "attention"
-      ? ShieldQuestionIcon
-      : displayKind === "failed"
-        ? CircleAlertIcon
-        : displayKind === "preview"
-          ? BellIcon
-          : CheckCircle2Icon;
-  const title = thread?.title ?? "Your thread updates appear here";
-  const message =
-    displayKind === "completed"
-      ? `${title} is done`
-      : displayKind === "failed"
-        ? `${title} ran into a problem`
-        : displayKind === "attention"
-          ? `${title} needs your input`
-          : title;
-  const pause = (value: boolean) => {
-    paused.current = value;
-    props.onPauseChange(value);
-  };
-  const trackCursor = useEffectEvent((cursor: { x: number; y: number; overMascot?: boolean }) => {
-    const rect = root.current?.getBoundingClientRect();
-    const contains = (area: DOMRect | undefined) =>
-      Boolean(
-        area &&
-        cursor.x >= area.left &&
-        cursor.x <= area.right &&
-        cursor.y >= area.top &&
-        cursor.y <= area.bottom,
-      );
-    const focused = document.hasFocus() && Boolean(root.current?.contains(document.activeElement));
-    const next = Boolean(cursor.overMascot) || contains(rect) || focused;
-    if (paused.current !== next) pause(next);
-  });
-  // The native cursor feed also covers hovering an inactive floating window.
-  useEffect(() => {
-    if (!("companion" in window)) return;
-    return window.companion.onCursor(trackCursor);
-  }, []);
+  const { kind: displayKind, title, message } = describeThreadNotice(props.notice);
+  const Icon = NOTICE_ICONS[displayKind];
 
   return (
     <section
       data-app-sidebar
-      ref={root}
       role="status"
       aria-label={kind === "preview" ? `Notification preview: ${message}` : message}
       className="companion-notice dark"
       data-kind={displayKind}
       data-side={props.side ?? "left"}
       data-closing={props.closing}
-      onPointerEnter={() => pause(true)}
-      onPointerLeave={() => {
-        if (!root.current?.contains(document.activeElement)) pause(false);
-      }}
-      onFocusCapture={() => pause(true)}
-      onBlurCapture={(event) => {
-        if (!event.currentTarget.contains(event.relatedTarget)) pause(false);
-      }}
       onTransitionEnd={(event) => {
         if (
           event.target === event.currentTarget &&
@@ -133,11 +94,11 @@ export function NotificationCard(props: {
           props.onClosed();
       }}
     >
-      <ThoughtCloud mascotY={props.mascotY} />
+      <ThoughtCloud trail={props.trail ?? true} mascotY={props.mascotY} />
       <button
         type="button"
         className="companion-notice-close"
-        aria-label="Dismiss notification"
+        aria-label={`Dismiss ${title}`}
         title="Dismiss"
         onClick={props.onDismiss}
       >
@@ -174,11 +135,9 @@ export function NotificationCard(props: {
               <span>
                 {kind === "preview"
                   ? "Preview"
-                  : props.remaining > 0
-                    ? `${props.remaining} more waiting`
-                    : thread
-                      ? relativeTime(thread.latestRunCompletedAt ?? thread.updatedAt)
-                      : "just now"}
+                  : thread
+                    ? relativeTime(thread.latestRunCompletedAt ?? thread.updatedAt)
+                    : "just now"}
               </span>
             </span>
           </div>

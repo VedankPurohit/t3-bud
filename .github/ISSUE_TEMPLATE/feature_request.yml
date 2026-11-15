@@ -1,0 +1,23 @@
+name: Feature request
+description: Describe a use case and the behavior that would help.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: need
+    attributes:
+      label: What are you trying to do?
+      description: Describe the task and what gets in your way today.
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Proposed behavior
+      description: Explain what the user would see or do. A small example is useful.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Workarounds or alternatives
+      description: Optional. Mention anything you have tried or another way to solve it.

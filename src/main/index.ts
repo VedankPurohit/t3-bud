@@ -13,6 +13,8 @@ import { config } from "./config";
 import { anchorOf, defaultAnchor, islandBounds, windowPlacement, type Point } from "./island";
 import { describeEnvironment } from "./t3/auth";
 import { CompanionStore } from "./store";
+import { maintenanceCommand } from "./command-input";
+import { runMaintenance } from "./commands";
 import { productName } from "../../package.json";
 
 /** Where T3 Code's desktop app serves its local environment by default. */
@@ -23,7 +25,10 @@ const LOCAL_CANDIDATES = [
 ];
 
 // Development and test runs can isolate their sign-in and expose DevTools to automation.
-if (process.env.T3_COMPANION_USER_DATA) app.setPath("userData", process.env.T3_COMPANION_USER_DATA);
+// Keep the original Keychain service name and profile directory across display-name changes.
+const STORAGE_NAME = "T3 Companion";
+app.setName(STORAGE_NAME);
+app.setPath("userData", process.env.T3_COMPANION_USER_DATA ?? join(app.getPath("appData"), STORAGE_NAME));
 if (process.env.T3_COMPANION_DEBUG_PORT) {
   app.commandLine.appendSwitch("remote-debugging-port", process.env.T3_COMPANION_DEBUG_PORT);
 }
@@ -335,19 +340,37 @@ function registerIpc() {
   handle("companion:quit", () => app.quit());
 }
 
-if (!app.requestSingleInstanceLock()) {
+const command = maintenanceCommand(process.argv);
+if (command) {
+  void app.whenReady().then(async () => {
+    if (process.platform === "darwin") app.dock?.hide();
+    try {
+      const result = await runMaintenance(command);
+      process.stdout.write(`${JSON.stringify(result.body)}\n`, () => app.exit(result.code));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "The command failed.";
+      process.stdout.write(`${JSON.stringify({ ok: false, error: message })}\n`, () => app.exit(1));
+    }
+  });
+} else if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
-  app.on("second-instance", () => mascotWindow?.showInactive());
+  app.on("second-instance", (_event, _argv, _cwd, data) => {
+    const action = (data as { companionAction?: unknown } | undefined)?.companionAction;
+    if (action === "quit") app.quit();
+    else if (action === "reload") void store.start(null);
+    else mascotWindow?.showInactive();
+  });
   void app.whenReady().then(async () => {
     // An accessory app: no Dock icon or menu bar, just the floating companion.
     if (process.platform === "darwin") app.dock?.hide();
     registerIpc();
     createWindow();
-    store.start(config.pairing() ? null : await detectLocalServer());
+    await store.start(detectLocalServer);
   });
   app.on("before-quit", () => {
     quitting = true;
+    store.dispose();
   });
   app.on("window-all-closed", () => app.quit());
 }

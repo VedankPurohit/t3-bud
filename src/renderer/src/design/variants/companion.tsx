@@ -1,11 +1,12 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { CompanionState, ProjectSummary } from "@shared/types";
 
 import { CompanionMascot, type CompanionMood } from "../../components/Mascot";
 import { deriveProjectIdentity } from "../../t3/projectIdentity";
 import { useMood } from "../../lib/mood";
 import { activityHeight, selectHoverThreads } from "../../lib/activity";
-import { NotificationCard } from "../../island/notification";
+import { NotificationStack } from "../../island/notification-stack";
+import { dismissThreadNotices, type ThreadNotice } from "../../lib/notifications";
 import type { CSSProperties } from "react";
 import { ActivityPanel } from "../../island/activity";
 import { IslandContext, makeLookups } from "../../island/context";
@@ -42,6 +43,7 @@ function Orb(props: { mood: CompanionMood; count: number }) {
       <CompanionMascot mood={props.mood} hopKey={0} size={60} />
       {props.count > 0 ? (
         <span
+          data-app-sidebar
           className="companion-count"
           data-tone={
             props.mood === "attention" ? "attention" : props.mood === "done" ? "done" : "working"
@@ -97,38 +99,88 @@ function Scene(props: { state: CompanionState; mood: CompanionMood; summary: str
   );
 }
 
-function NotificationScene(props: { side?: "left" | "right" }) {
-  const [closing, setClosing] = useState(false);
-  const [closed, setClosed] = useState(false);
+const demoNotices: ThreadNotice[] = [
+  { id: "design-completion", kind: "completed", thread: finished },
+  {
+    id: "design-second",
+    kind: "completed",
+    thread: {
+      ...finished,
+      threadId: "second",
+      title: "Build the weekly review widget",
+      projectId: "p-dash",
+    },
+  },
+  {
+    id: "design-third",
+    kind: "attention",
+    thread: { ...active, threadId: "third", title: "Review the settings migration" },
+  },
+  {
+    id: "design-fourth",
+    kind: "failed",
+    thread: {
+      ...finished,
+      threadId: "fourth",
+      title: "Run the deployment checks",
+      status: "failed",
+    },
+  },
+];
+
+function NotificationScene(props: {
+  side?: "left" | "right";
+  stack?: boolean;
+  expanded?: boolean;
+}) {
+  const samples = props.stack ? demoNotices : demoNotices.slice(0, 1);
+  const [notices, setNotices] = useState(samples);
+  const [closingIds, setClosingIds] = useState<readonly string[]>([]);
   const [action, setAction] = useState("");
+  const [expanded, setExpanded] = useState(props.expanded ?? false);
   const mascotX = props.side === "right" ? 46 : 358;
+  // The gallery must also complete dismissals when its iframe is out of view.
+  useEffect(() => {
+    if (!closingIds.length) return;
+    const timer = setTimeout(() => {
+      setNotices((current) => dismissThreadNotices(current, closingIds));
+      setClosingIds([]);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [closingIds]);
   return (
     <IslandContext value={makeLookups(state)}>
       <div
         className="relative h-full w-full"
         style={{ "--companion-anchor-x": `${mascotX}px` } as CSSProperties}
       >
-        <div className="absolute top-0" style={{ left: mascotX - 38 }}>
+        <div className="absolute top-6" style={{ left: mascotX - 38 }}>
           <Orb mood="done" count={1} />
         </div>
-        {!closed ? (
-          <NotificationCard
-            notice={{ id: "design-completion", kind: "completed", thread: finished }}
+        {notices.length ? (
+          <NotificationStack
+            notices={notices}
             side={props.side}
-            remaining={0}
-            closing={closing}
+            closingIds={closingIds}
+            expanded={expanded}
+            onExpandedChange={setExpanded}
             onPauseChange={() => {}}
             onReply={() => setAction("Reply in companion")}
             onOpen={() => setAction("Open in T3 Code")}
-            onDismiss={() => setClosing(true)}
-            onClosed={() => setClosed(true)}
+            onDismiss={(id) => setClosingIds((current) => [...current, id])}
+            onClosed={(id) => {
+              setNotices((current) => dismissThreadNotices(current, [id]));
+              setClosingIds((current) => current.filter((item) => item !== id));
+            }}
+            onClearAll={() => setClosingIds(notices.map((notice) => notice.id))}
           />
         ) : (
           <button
             className="absolute top-12 left-4 text-xs text-white underline"
             onClick={() => {
-              setClosing(false);
-              setClosed(false);
+              setClosingIds([]);
+              setNotices(samples);
+              setExpanded(props.expanded ?? false);
             }}
           >
             Replay notification
@@ -148,7 +200,7 @@ export const variant: DesignVariant = {
   id: "companion",
   name: "Current companion",
   pitch:
-    "The current hover panel, using the same component and color tokens as the running companion.",
+    "The mascot's violet artwork with T3 Code's black panels and neutral notification controls.",
   layout:
     "The mascot stays 60px. Hover reveals a 300px activity panel below it, with project and provider icons, a finished thread, and active work. Each thread opens directly; the header opens the inbox.",
   compactSize: { width: 76, height: 60 },
@@ -166,6 +218,18 @@ export const variant: DesignVariant = {
       label: "Thought bubble · left screen edge",
       size: { width: 404, height: 148 },
       render: () => <NotificationScene side="right" />,
+    },
+    {
+      id: "notification-stack",
+      label: "Grouped updates",
+      size: { width: 404, height: 148 },
+      render: () => <NotificationScene stack />,
+    },
+    {
+      id: "notification-details",
+      label: "Updates expanded",
+      size: { width: 404, height: 286 },
+      render: () => <NotificationScene stack expanded />,
     },
     {
       id: "inbox",

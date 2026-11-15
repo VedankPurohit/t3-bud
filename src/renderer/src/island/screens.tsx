@@ -311,8 +311,9 @@ export function InboxScreen(props: {
             <span className="text-muted-foreground/50">·</span>
           </>
         ) : null}
-        <span className={cn(state.connection.state === "offline" && "text-warning-foreground")}>
-          {syncedLabel(state.syncedAt, state.connection.state)}
+        <span className={cn("min-w-0 truncate", state.connection.state === "offline" && "text-warning-foreground")}
+          title={state.connection.state === "offline" ? state.connection.error : undefined}>
+          {state.connection.state === "offline" ? state.connection.error : syncedLabel(state.syncedAt, state.connection.state)}
         </span>
         <span className="ms-auto">
           <Button
@@ -683,8 +684,12 @@ export function ConnectScreen(props: { connection: Connection; onMinimize: () =>
   const busy = connection.state === "pairing";
   const connect = async () => {
     setError(null);
-    const result = await api().connect(pairing, address.trim() || null);
-    if (!result.ok) setError(result.error);
+    try {
+      const result = await api().connect(pairing, address.trim() || null);
+      if (!result.ok) setError(result.error);
+    } catch {
+      setError("Pairing failed. Check the link and server address, then try again.");
+    }
   };
   const strong = (text: string) => <b className="font-medium text-foreground">{text}</b>;
   const bareCode = /^[A-Za-z0-9]{12}$/.test(pairing.trim());
