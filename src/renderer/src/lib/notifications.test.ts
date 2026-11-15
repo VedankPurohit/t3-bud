@@ -125,6 +125,23 @@ describe("thread notifications", () => {
     ).toBe("attention");
   });
 
+  it("shows a renewed approval after a completion when the approval ID is reused", () => {
+    const baseline = collectThreadNotices(emptyNotificationTracker, state([thread("a")]));
+    const approval = collectThreadNotices(baseline.tracker, state([thread("a", { pendingRequestCount: 1 })]));
+    const completion = collectThreadNotices(approval.tracker, state([thread("a", {
+      status: "completed", latestRunCompletedAt: "2026-11-14T01:00:00Z",
+    })]));
+    const renewed = collectThreadNotices(completion.tracker, state([thread("a", { pendingRequestCount: 1 })]));
+    expect(renewed.notices[0]!.id).toBe(approval.notices[0]!.id);
+    const queue = enqueueThreadNotices(
+      enqueueThreadNotices(approval.notices, completion.notices), renewed.notices,
+    );
+    expect(queue.at(-1)).toBe(renewed.notices[0]);
+    expect(summarizeThreadNotices(queue)).toMatchObject({
+      kind: "attention", message: "1 needs you", items: renewed.notices,
+    });
+  });
+
   it("ignores startup backlog and baselines a different paired environment", () => {
     const initial = collectThreadNotices(
       emptyNotificationTracker,

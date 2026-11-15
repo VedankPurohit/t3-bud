@@ -91,7 +91,10 @@ export function enqueueThreadNotices(
   incoming: readonly ThreadNotice[],
 ) {
   const byId = new Map(queue.map((notice) => [notice.id, notice]));
-  for (const notice of incoming) byId.set(notice.id, notice);
+  for (const notice of incoming) {
+    byId.delete(notice.id);
+    byId.set(notice.id, notice);
+  }
   return [...byId.values()].slice(-20);
 }
 
