@@ -30,5 +30,7 @@ jobs:
         run: node scripts/smoke-install.mjs "$RUNNER_TEMP/companion-apps"
       - name: Check the built checkout command interface
         run: node scripts/smoke-install.mjs --source
+      - name: Check grouped notifications and dismissal races
+        run: node scripts/smoke-notifications.mjs
       - name: Check native startup registration with a disposable app
         run: node scripts/smoke-startup.mjs

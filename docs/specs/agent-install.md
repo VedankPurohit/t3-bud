@@ -16,6 +16,7 @@ connection. The default workflow does not copy a bundle into `~/Applications`.
 - `pnpm companion startup enable --source` registers an absolute Electron executable
   and checkout directory. It works without pnpm or Node on the login session's PATH.
   Source and installed-app modes share one startup slot. Status must distinguish targets.
+  Disabling startup or uninstalling a bundle preserves a different registered target.
 - The optional `pnpm companion install` checks types, runs tests, packages for the host architecture,
   and replaces only this application's bundle. Failed copies preserve the previous install.
 - Commands support paths containing spaces and run without a shell. Repeated installation
@@ -48,7 +49,7 @@ signing. Windows and Linux installation are outside this release.
 
 ## Validation
 
-The combined implementation passes 82 tests and type checking. A fresh source copy was validated
+The combined implementation passes 86 tests and type checking. A fresh source copy was validated
 with the frozen lockfile and the optional bundle in a directory containing spaces.
 The source-checkout and packaged smoke checks exercise
 pairing, encrypted persistence, authenticated RPC, protocol incompatibility, revoked

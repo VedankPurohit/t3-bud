@@ -76,6 +76,7 @@ checks in your logged-in Mac desktop session:
 ```sh
 install_root="$(mktemp -d "${TMPDIR:-/tmp}/t3-bud-check.XXXXXX")"
 node scripts/smoke-install.mjs --source
+node scripts/smoke-notifications.mjs
 pnpm companion install --no-launch --app-dir "$install_root/apps"
 node scripts/smoke-install.mjs "$install_root/apps"
 node scripts/smoke-startup.mjs

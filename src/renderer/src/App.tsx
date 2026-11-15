@@ -205,7 +205,6 @@ export function App() {
         : related;
     setNotices((current) => dismissThreadNotices(current, ids));
     setClosingNoticeIds((current) => current.filter((item) => !ids.includes(item)));
-    if (notices.every((item) => ids.includes(item.id))) setNoticeExpanded(false);
     setHoverSpace(mode.kind === "folded" && Boolean(mode.revealed));
   };
 
@@ -216,10 +215,13 @@ export function App() {
     const timer = setTimeout(() => {
       setNotices((current) => dismissThreadNotices(current, ids));
       setClosingNoticeIds((current) => current.filter((id) => !ids.includes(id)));
-      if (notices.every((item) => ids.includes(item.id))) setNoticeExpanded(false);
     }, 300);
     return () => clearTimeout(timer);
   }, [closingNoticeIds]);
+
+  useEffect(() => {
+    if (notices.length === 0) setNoticeExpanded(false);
+  }, [notices.length]);
 
   // Cmd+W reaches the main process as a close; it folds the island instead.
   useEffect(

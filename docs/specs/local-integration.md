@@ -23,7 +23,7 @@ The optional app bundle uses Electron's default icon.
 
 ## Validation
 
-- Type checking, production build, and 82 tests across 20 files pass.
+- Type checking, production build, and 86 tests across 20 files pass.
 - A clean source copy installs with the frozen lockfile and packages without local images.
 - Source and packaged command smoke checks use a disposable server, profile, and mock Keychain.
 - Disposable native startup checks cover both bundle and source launch registration.
@@ -45,3 +45,11 @@ prepares the binary before source commands or smoke checks use it.
 Native grouped-notification checks pass for summary, review, individual dismissal,
 and clear all. Source smoke checks pass after the Electron install hook prepares
 the runtime in a fresh source copy.
+
+## Review fixes
+
+Startup disable preserves a different registered source or bundle target. Only the
+latest overlapping startup read may apply its credentials or discovery result.
+Reused notification IDs move to the end of the arrival queue, and notifications
+arriving during a batch dismissal keep expanded review open. Regression checks
+cover these cases, including the native timeout path when transition events are absent.
