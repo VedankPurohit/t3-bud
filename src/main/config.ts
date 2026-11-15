@@ -36,29 +36,32 @@ function write(update: (config: ConfigFile) => ConfigFile) {
 export const config = {
   /** The server paired last, even after its token expired, to suggest pairing again. */
   serverUrl: () => read().httpBaseUrl ?? null,
-  pairing(): Pairing | null {
+  async pairing(): Promise<Pairing | null> {
     const file = read();
     if (!file.httpBaseUrl || !file.sealedToken || !file.tokenExpiresAt || !file.environmentId) return null;
-    if (Date.parse(file.tokenExpiresAt) <= Date.now()) return null;
+    if (!Number.isFinite(Date.parse(file.tokenExpiresAt)) || Date.parse(file.tokenExpiresAt) <= Date.now()) return null;
     try {
+      const decrypted = await safeStorage.decryptStringAsync(Buffer.from(file.sealedToken, "base64"));
       return {
         httpBaseUrl: file.httpBaseUrl,
         environmentId: file.environmentId,
         environmentLabel: file.environmentLabel ?? "T3 Code",
-        token: safeStorage.decryptString(Buffer.from(file.sealedToken, "base64")),
+        token: decrypted.result,
         expiresAt: file.tokenExpiresAt,
       };
     } catch {
       return null;
     }
   },
-  savePairing(pairing: Pairing) {
+  async savePairing(pairing: Pairing) {
+    if (!(await safeStorage.isAsyncEncryptionAvailable())) throw new Error("Keychain encryption is unavailable. Unlock the macOS keychain and allow this app to access it.");
+    const sealedToken = (await safeStorage.encryptStringAsync(pairing.token)).toString("base64");
     write((file) => ({
       ...file,
       httpBaseUrl: pairing.httpBaseUrl,
       environmentId: pairing.environmentId,
       environmentLabel: pairing.environmentLabel,
-      sealedToken: safeStorage.encryptString(pairing.token).toString("base64"),
+      sealedToken,
       tokenExpiresAt: pairing.expiresAt,
     }));
   },

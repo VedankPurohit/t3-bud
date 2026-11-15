@@ -26,7 +26,7 @@ function fakeSocket() {
 }
 beforeEach(() => {
   vi.useFakeTimers();
-  vi.mocked(config.pairing).mockReturnValue(pairing);
+  vi.mocked(config.pairing).mockResolvedValue(pairing);
   vi.mocked(describeEnvironment).mockResolvedValue({ environmentId: "env", label: "Local", orchestrationProtocolVersion: 2 });
   vi.mocked(socketUrl).mockResolvedValue("ws://localhost/ws");
   vi.mocked(sessionIsValid).mockResolvedValue(true);
@@ -43,6 +43,45 @@ function start() {
   const store = new CompanionStore(() => {}, () => {});
   stores.push(store); store.start(null); return store;
 }
+
+describe("startup pairing", () => {
+  it("reads saved credentials once and skips discovery when paired", async () => {
+    const store = new CompanionStore(() => {}, () => {});
+    stores.push(store);
+    const discover = vi.fn(async () => "http://localhost:3773");
+    await store.start(discover);
+    expect(config.pairing).toHaveBeenCalledTimes(1);
+    expect(discover).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(store.state().connection.state).toBe("connected");
+  });
+
+  it("discovers a server after one unsuccessful credential read", async () => {
+    vi.mocked(config.pairing).mockResolvedValue(null);
+    const store = new CompanionStore(() => {}, () => {});
+    stores.push(store);
+    const discover = vi.fn(async () => "http://localhost:3773");
+    await store.start(discover);
+    expect(config.pairing).toHaveBeenCalledTimes(1);
+    expect(discover).toHaveBeenCalledTimes(1);
+    expect(store.state().connection).toEqual({ state: "unconfigured", suggestedUrl: "http://localhost:3773" });
+  });
+
+  it("does not overwrite a newer state when discovery finishes late", async () => {
+    vi.mocked(config.pairing).mockResolvedValue(null);
+    const store = new CompanionStore(() => {}, () => {});
+    stores.push(store);
+    let finish!: (url: string) => void;
+    const discover = vi.fn(() => new Promise<string>(resolve => { finish = resolve; }));
+    const starting = store.start(discover);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(discover).toHaveBeenCalledTimes(1);
+    store.signOut(null);
+    finish("http://localhost:3773");
+    await starting;
+    expect(store.state().connection).toEqual({ state: "unconfigured", suggestedUrl: null });
+  });
+});
 
 describe("connection recovery", () => {
   it("surfaces subscription failures, closes the old socket, and reconnects", async () => {
@@ -239,4 +278,8 @@ describe("connection recovery", () => {
   });
 
 
+  it("returns a normal action error for malformed pairing links", async () => {
+    const store = start();
+    expect(await store.pairWith("https://app.t3.codes/pair?host=http://&token=23456789ABCD", null)).toMatchObject({ ok: false });
+  });
 });
