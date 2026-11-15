@@ -81,6 +81,23 @@ describe("startup registration", () => {
     expect(await readFile(paths.startupFile, "utf8")).toBe(startupPlist(paths));
   });
 
+  it("preserves startup owned by another setup when disabling or uninstalling", async () => {
+    const { home, paths } = await fixture();
+    const source = sourcePaths(home, join(home, "checkout"), join(home, "Electron"), "test.companion");
+    const otherSource = sourcePaths(home, join(home, "other checkout"), join(home, "Electron"), "test.companion");
+    await mkdir(join(paths.startupFile, ".."), { recursive: true });
+    for (const [registered, requested] of [[source, paths], [paths, source], [source, otherSource]]) {
+      const plist = startupPlist(registered);
+      await writeFile(paths.startupFile, plist);
+      const run = vi.fn(async () => ({ code: 0, stdout: "", stderr: "" }));
+      expect(await manageStartup("disable", requested, 501, run)).toMatchObject({
+        enabled: false, registered: true, loaded: true, targetMatches: false,
+      });
+      expect(await readFile(paths.startupFile, "utf8")).toBe(plist);
+      expect(run.mock.calls.map((call) => call[1][0])).toEqual(["print"]);
+    }
+  });
+
   it("escapes the plist and sends paths as individual arguments, with repeatable enable and disable", async () => {
     const { paths } = await fixture();
     await mkdir(join(paths.executable, ".."), { recursive: true });

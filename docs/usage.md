@@ -84,4 +84,5 @@ directions in light and dark themes. It is a visual reference with sample data.
 For that setup, omit `--source` from the commands above. `--app-dir <directory>`
 selects a different bundle location. `pnpm companion uninstall` removes the bundle
 and startup registration while preserving the profile. Source and bundle startup
-share one slot, so enabling one replaces the startup target of the other.
+share one slot, so enabling one replaces the startup target of the other. Disabling
+startup or uninstalling a bundle preserves registration belonging to the other setup.

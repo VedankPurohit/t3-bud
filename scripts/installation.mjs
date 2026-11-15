@@ -96,6 +96,9 @@ export async function manageStartup(action, paths, uid, run) {
     targetMatches: previous === startupPlist(paths),
   };
   if (action === "disable") {
+    if ((previous !== null || loaded) && previous !== startupPlist(paths)) return {
+      enabled: false, registered: previous !== null, loaded, targetMatches: false, preserved: true,
+    };
     if (loaded) await invoke(["bootout", service]);
     await rm(paths.startupFile, { force: true });
     return { enabled: false, registered: false, loaded: false };
